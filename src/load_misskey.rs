@@ -91,26 +91,23 @@ pub async fn load_misskey(config:Arc<ConfigFile>,note_ui:Sender<Arc<data_model::
 		}
 		let rc=2;//削除しきい値
 		let mut remove_targets=vec![];
-		for (k,v) in note_cache.iter(){
-			let count=Arc::strong_count(v);
-			if count<rc{
-				remove_targets.push(k.clone());
+		let mut removed_note=0;
+		for _ in 0..3{
+			for (k,v) in note_cache.iter(){
+				let count=Arc::strong_count(v);
+				if count<rc{
+					remove_targets.push(k.clone());
+				}
 			}
-		}
-		for r in &remove_targets{
-			note_cache.remove(r);
-		}
-		let removed_note=remove_targets.len();
-		remove_targets.clear();
-		for (k,v) in note_cache.iter(){
-			let count=Arc::strong_count(v);
-			if count<rc{
-				remove_targets.push(k.clone());
+			if remove_targets.is_empty(){
+				break;
 			}
-		}
-		for r in &remove_targets{
-			note_cache.remove(r);
-		}
+			for r in &remove_targets{
+				note_cache.remove(r);
+			}
+			removed_note+=remove_targets.len();
+			remove_targets.clear();
+		};
 		println!("note cache\t removed {}({} cached)",removed_note+remove_targets.len(),note_cache.len());
 		remove_targets.clear();
 		emoji_cache.trim(rc).await;
