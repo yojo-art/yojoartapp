@@ -1,0 +1,3 @@
+set -eu
+#docker build -t yojo-art-app .
+docker run --rm -it -v ./:/app -v /hdd-data/Users/eratou/ssh/yojo.tokyo/app_build_cache:/cache yojo-art-app

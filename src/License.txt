@@ -1,0 +1,107 @@
+
+"themify-icons"
+このソフトウェアではOFLでライセンスされた "themify-icons" フォントを使用しています。
+ライセンス全文は http://scripts.sil.org/OFL で確認できます
+"themify-icons" は https://themify.me/themify-icons から取得する事ができます
+
+"NotoSansJP-Medium"
+このソフトウェアではOFLでライセンスされた "NotoSansJP-Medium" フォントを使用しています。
+ライセンス全文は http://scripts.sil.org/OFL で確認できます
+"NotoSansJP-Medium" は https://fonts.google.com/noto/specimen/Noto+Sans+JP から取得する事ができます
+
+"blurhash-rust-wasm"
+このソフトウェアでは MIT License でライセンスされた "blurhash-rust-wasm" ライブラリを使用しています。
+ライセンス全文は https://github.com/fpapado/blurhash-rust-wasm/blob/a81e33c46a10a63f1f0ed25aa48a6e3066d26804/LICENSE.md で確認できます
+"blurhash-rust-wasm" は https://github.com/fpapado/blurhash-rust-wasm から取得する事ができます
+
+"urlencoding"
+このソフトウェアでは MIT License でライセンスされた "urlencoding" ライブラリを使用しています。
+ライセンス全文は https://github.com/kornelski/rust_urlencoding/blob/v2.1.2/LICENSE で確認できます
+"urlencoding" は https://crates.io/crates/urlencoding から取得する事ができます
+
+"tokio"
+このソフトウェアでは MIT License でライセンスされた "urlencoding" ライブラリを使用しています。
+ライセンス全文は https://github.com/tokio-rs/tokio/blob/tokio-1.37.0/LICENSE で確認できます
+"tokio" は https://crates.io/crates/tokio から取得する事ができます
+
+"egui"
+"eframe"
+"egui-winit"
+このソフトウェアでは Apache License 2.0 でライセンスされた "egui" ライブラリを使用しています。
+ライセンス全文は https://github.com/emilk/egui/blob/0.27.2/LICENSE-APACHE で確認できます
+"egui" は https://crates.io/crates/egui から取得する事ができます
+
+"flate2"
+このソフトウェアでは Apache License 2.0 でライセンスされた "flate2" ライブラリを使用しています。
+ライセンス全文は https://github.com/rust-lang/flate2-rs/blob/1.0.30/LICENSE-APACHE で確認できます
+"flate2" は https://crates.io/crates/flate2 から取得する事ができます
+
+"regex"
+このソフトウェアでは Apache License 2.0 でライセンスされた "regex" ライブラリを使用しています。
+ライセンス全文は https://github.com/rust-lang/regex/blob/1.10.4/LICENSE-APACHE で確認できます
+"regex" は https://crates.io/crates/regex から取得する事ができます
+
+"hex"
+このソフトウェアでは Apache License 2.0 でライセンスされた "hex" ライブラリを使用しています。
+ライセンス全文は https://github.com/KokaKiwi/rust-hex/blob/v0.4.3/LICENSE-APACHE で確認できます
+"regex" は https://crates.io/crates/hex から取得する事ができます
+
+"webp"
+このソフトウェアでは Apache License 2.0 でライセンスされた "webp" ライブラリを使用しています。
+ライセンス全文は https://github.com/jaredforth/webp/blob/4e7616a0a62bc4a78a9c63cfd3040fdd6757f92b/LICENSE-APACHE で確認できます
+"webp" は https://crates.io/crates/webp から取得する事ができます
+
+"serde_json"
+このソフトウェアでは Apache License 2.0 でライセンスされた "serde_json" ライブラリを使用しています。
+ライセンス全文は https://github.com/serde-rs/json/blob/v1.0.117/LICENSE-APACHE で確認できます
+"serde_json" は https://crates.io/crates/serde_json から取得する事ができます
+
+"serde"
+このソフトウェアでは Apache License 2.0 でライセンスされた "serde" ライブラリを使用しています。
+ライセンス全文は https://github.com/serde-rs/serde/blob/v1.0.201/LICENSE-APACHE で確認できます
+"serde" は https://crates.io/crates/serde から取得する事ができます
+
+"image"
+このソフトウェアでは Apache License 2.0 でライセンスされた "image" ライブラリを使用しています。
+ライセンス全文は https://github.com/image-rs/image/blob/v0.25.1/LICENSE-APACHE で確認できます
+"image" は https://crates.io/crates/image から取得する事ができます
+
+"uuid"
+このソフトウェアでは Apache License 2.0 でライセンスされた "uuid" ライブラリを使用しています。
+ライセンス全文は https://github.com/uuid-rs/uuid/blob/1.7.0/LICENSE-APACHE で確認できます
+"uuid" は https://crates.io/crates/uuid から取得する事ができます
+
+"chrono"
+このソフトウェアでは Apache License 2.0 でライセンスされた "chrono" ライブラリを使用しています。
+ライセンス全文は https://github.com/chronotope/chrono/blob/v0.4.38/LICENSE.txt で確認できます
+"chrono" は https://crates.io/crates/chrono から取得する事ができます
+
+"reqwest"
+このソフトウェアでは Apache License 2.0 でライセンスされた "reqwest" ライブラリを使用しています。
+ライセンス全文は https://github.com/seanmonstar/reqwest/blob/v0.12.4/LICENSE-APACHE で確認できます
+"reqwest" は https://crates.io/crates/reqwest から取得する事ができます
+
+"futures"
+このソフトウェアでは Apache License 2.0 でライセンスされた "futures" ライブラリを使用しています。
+ライセンス全文は https://github.com/rust-lang/futures-rs/blob/0.3.30/LICENSE-APACHE で確認できます
+"futures" は https://crates.io/crates/futures から取得する事ができます
+
+"anyhow"
+このソフトウェアでは Apache License 2.0 でライセンスされた "anyhow" ライブラリを使用しています。
+ライセンス全文は https://github.com/dtolnay/anyhow/blob/1.0.83/LICENSE-APACHE で確認できます
+"anyhow" は https://crates.io/crates/anyhow から取得する事ができます
+
+"env_logger"
+このソフトウェアでは Apache License 2.0 でライセンスされた "env_logger" ライブラリを使用しています。
+ライセンス全文は https://github.com/rust-cli/env_logger/blob/v0.11.3/LICENSE-APACHE で確認できます
+"env_logger" は https://crates.io/crates/env_logger から取得する事ができます
+
+"android_logger"
+このソフトウェアでは Apache License 2.0 でライセンスされた "android_logger" ライブラリを使用しています。
+ライセンス全文は https://github.com/rust-mobile/android_logger-rs/blob/v0.13.1/LICENSE-APACHE で確認できます
+"android_logger" は https://crates.io/crates/android_logger から取得する事ができます
+
+"jni"
+このソフトウェアでは Apache License 2.0 でライセンスされた "jni" ライブラリを使用しています。
+ライセンス全文は https://github.com/jni-rs/jni-rs/blob/v0.21.1/LICENSE-APACHE で確認できます
+"jni" は https://crates.io/crates/jni から取得する事ができます

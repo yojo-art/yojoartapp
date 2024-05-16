@@ -1,0 +1,29 @@
+generic:
+  icon: build_deps/icon.png
+android:
+  icon: build_deps/icon.png
+  manifest:
+    package: tokyo.yojo.yojoartapp
+    uses_permission:
+      - name: "android.permission.INTERNET"
+    application:
+      label: "ようじょ"
+      debuggable: true
+  gradle: false
+  wry: false
+macos:
+  info:
+    cf_bundle_display_name: YojoArtApp
+windows:
+  manifest:
+    identity:
+      name: YojoArtApp
+    properties:
+      display_name: YojoArtApp
+    resources:
+      resource:
+    dependencies:
+      target_device_family:
+    capabilities:
+    applications:
+      application:
