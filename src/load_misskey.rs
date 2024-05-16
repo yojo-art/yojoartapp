@@ -1,18 +1,28 @@
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::{atomic::AtomicU32, Arc}};
 
-use chrono::{TimeZone, Utc};
-use futures::{StreamExt, TryStreamExt};
+use futures::{ SinkExt, StreamExt, TryStreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::{mpsc::{Receiver, Sender}, Mutex};
 
 use crate::{data_model::{self, EmojiCache, NoteFile}, ConfigFile};
 
-pub async fn load_misskey(config:Arc<ConfigFile>,note_ui:Sender<Arc<data_model::Note>>,delay_assets:Sender<Arc<data_model::Note>>,client:Client,mut reload_event:Receiver<(u8,TimeLine)>){
+pub struct TLOption{
+	pub(crate) limit:u8,
+	pub(crate) tl:TimeLine,
+	pub(crate) known_notes:Vec<Arc<data_model::Note>>,
+	pub(crate) websocket:bool,
+}
+pub async fn load_misskey(
+	config:Arc<ConfigFile>,
+	note_ui:Sender<Arc<data_model::Note>>,
+	delay_assets:Sender<Arc<data_model::Note>>,
+	client:Client,
+	mut reload_event:Receiver<TLOption>,
+){
 	let mut summaly_proxy="https://summaly.yojo.tokyo".to_owned();
 	let mut media_proxy="https://proxy.yojo.tokyo".to_owned();
-	let mut local_instance="https://misskey.kzkr.xyz";// /api /twemoji /avatar
 	if config.token.as_ref().is_none(){
 		let mes=format!("token が指定されていません");
 		if let Err(e)=note_ui.send(Arc::new(data_model::Note::system_message(mes,"").await)).await{
@@ -27,8 +37,8 @@ pub async fn load_misskey(config:Arc<ConfigFile>,note_ui:Sender<Arc<data_model::
 		}
 		return;
 	}
-	local_instance=config.instance.as_ref().unwrap();
-	let meta=meta(&client,local_instance).await;
+	let local_instance=config.instance.clone().unwrap();
+	let meta=meta(&client,&local_instance).await;
 	if let Err(e)=meta{
 		let mes=format!("get api/meta error {}",e);
 		if let Err(e)=note_ui.send(Arc::new(data_model::Note::system_message(mes,"").await)).await{
@@ -40,46 +50,87 @@ pub async fn load_misskey(config:Arc<ConfigFile>,note_ui:Sender<Arc<data_model::
 	//media_proxy=meta.media_proxy;
 	println!("media_proxy:{}",media_proxy);
 	let mut local_emojis=HashMap::new();
-	if let Ok(emojis)=emojis(&client,local_instance).await{
+	if let Ok(emojis)=emojis(&client,&local_instance).await{
 		for emoji in emojis.emojis{
 			local_emojis.insert(emoji.name,emoji.url);
 		}
 	}
 	println!("{} local emojis",local_emojis.len());
-	let emoji_cache=data_model::EmojiCache::new(media_proxy,local_instance,Arc::new(local_emojis));
+	let emoji_cache=data_model::EmojiCache::new(media_proxy,&local_instance,Arc::new(local_emojis));
 	let mut instance_cache=HashMap::new();
 	let mut user_cache=HashMap::new();
 	let mut file_cache=HashMap::new();
 	let mut note_cache: HashMap<String, Arc<data_model::Note>>=HashMap::new();
-	while let Some(limit) = reload_event.recv().await{
-		let htl=read_timeline(&client,local_instance,config.token.as_ref().unwrap().clone(),limit.clone()).await;
-		if let Err(e)=htl{
-			let mes=format!("get api/notes/{} error {}",limit.1.to_string(),e);
-			if let Err(e)=note_ui.send(Arc::new(data_model::Note::system_message(mes,"").await)).await{
-				eprintln!("{:?}",e);
-			}
-			return;
-		}
-		let notes=htl.unwrap();
-		println!("{} notes get",notes.len());
-		for note in notes {
-			if let Some(n)=note_cache.get(&note.id){
-				if let Err(e)=note_ui.send(n.clone()).await{
+	let (raw_note_sender,mut raw_note_receiver)=tokio::sync::mpsc::channel(4);
+	let note_ui0=note_ui.clone();
+	tokio::runtime::Handle::current().spawn(async move{
+		let mut state=WSState{
+			stream: None,
+			now_stream: None,
+		};
+		while let Some(limit) = reload_event.recv().await{
+			eprintln!("{:?}",read_websocket(config.clone(),raw_note_sender.clone(),if limit.websocket{
+				Some(limit.tl.into())
+			}else{
+				None
+			},&mut state).await);
+			let limit=(limit.limit,limit.tl,limit.known_notes);
+			let htl=read_timeline(&client,config.instance.as_ref().unwrap(),config.token.as_ref().unwrap().clone(),limit.clone()).await;
+			if let Err(e)=htl{
+				let mes=format!("get api/notes/{} error {}",limit.1.to_string(),e);
+				if let Err(e)=note_ui0.send(Arc::new(data_model::Note::system_message(mes,"").await)).await{
 					eprintln!("{:?}",e);
 				}
-			}else{
-				let n=load_note(note,&mut note_cache,&mut user_cache,&mut instance_cache,&mut file_cache,local_instance,&emoji_cache).await;
-				if let Some(n) = n {
-					let n=Arc::new(n);
+				return;
+			}
+			let notes=htl.unwrap();
+			println!("{} notes get",notes.len());
+			if let Err(e)=raw_note_sender.send(RawNotes::Array(notes)).await{
+				eprintln!("{:?}",e);
+			}
+		}
+	});
+	let mut cacche_clean_wait_count=15;
+	while let Some(notes) = raw_note_receiver.recv().await{
+		match notes{
+			RawNotes::Single(note) =>{
+				if let Some((n,is_cache)) = load_note(note,&mut note_cache,&mut user_cache,&mut instance_cache,&mut file_cache,&emoji_cache).await {
 					//println!("@{}: {}", note.user.username, text);
 					note_cache.insert(n.id.to_owned(),n.clone());
 					let note=n.clone();
 					let note_ui=note_ui.clone();
-					//tokio::runtime::Handle::current().spawn(async move{
+					if let Err(e)=note_ui.send(note).await{
+						eprintln!("{:?}",e);
+					}
+					if !is_cache{
+						let delay_assets=delay_assets.clone();
+						tokio::runtime::Handle::current().spawn(async move{
+							if let Err(e)=delay_assets.send(n).await{
+								eprintln!("{:?}",e);
+							}
+						});
+						cacche_clean_wait_count-=1;
+					}
+				}
+			},
+			RawNotes::Array(notes) => {
+				let mut note_load=vec![];
+				for note in notes{
+					if let Some((n,is_cache)) = load_note(note,&mut note_cache,&mut user_cache,&mut instance_cache,&mut file_cache,&emoji_cache).await {
+						//println!("@{}: {}", note.user.username, text);
+						note_cache.insert(n.id.to_owned(),n.clone());
+						let note=n.clone();
+						let note_ui=note_ui.clone();
 						if let Err(e)=note_ui.send(note).await{
 							eprintln!("{:?}",e);
 						}
-					//});
+						if !is_cache{
+							note_load.push(n);
+							cacche_clean_wait_count-=1;
+						}
+					}
+				}
+				for n in note_load.into_iter().rev(){
 					let delay_assets=delay_assets.clone();
 					tokio::runtime::Handle::current().spawn(async move{
 						if let Err(e)=delay_assets.send(n).await{
@@ -87,30 +138,31 @@ pub async fn load_misskey(config:Arc<ConfigFile>,note_ui:Sender<Arc<data_model::
 						}
 					});
 				}
-			};
+			},
 		}
+		if cacche_clean_wait_count>0{
+			continue;
+		}
+		cacche_clean_wait_count=15;
 		let rc=2;//削除しきい値
 		let mut remove_targets=vec![];
-		for (k,v) in note_cache.iter(){
-			let count=Arc::strong_count(v);
-			if count<rc{
-				remove_targets.push(k.clone());
+		let mut removed_note=0;
+		for _ in 0..3{
+			for (k,v) in note_cache.iter(){
+				let count=Arc::strong_count(v);
+				if count<rc{
+					remove_targets.push(k.clone());
+				}
 			}
-		}
-		for r in &remove_targets{
-			note_cache.remove(r);
-		}
-		let removed_note=remove_targets.len();
-		remove_targets.clear();
-		for (k,v) in note_cache.iter(){
-			let count=Arc::strong_count(v);
-			if count<rc{
-				remove_targets.push(k.clone());
+			if remove_targets.is_empty(){
+				break;
 			}
-		}
-		for r in &remove_targets{
-			note_cache.remove(r);
-		}
+			for r in &remove_targets{
+				note_cache.remove(r);
+			}
+			removed_note+=remove_targets.len();
+			remove_targets.clear();
+		};
 		println!("note cache\t removed {}({} cached)",removed_note+remove_targets.len(),note_cache.len());
 		remove_targets.clear();
 		emoji_cache.trim(rc).await;
@@ -159,47 +211,208 @@ pub async fn load_misskey(config:Arc<ConfigFile>,note_ui:Sender<Arc<data_model::
 	//脱出するとspawnしたジョブが破棄されるので適当に待つ
 	//tokio::time::sleep(tokio::time::Duration::from_millis(10000)).await;
 }
+struct WSState{
+	stream:Option<Arc<WSStream>>,
+	now_stream:Option<u32>,
+}
+async fn read_websocket(config:Arc<ConfigFile>,sender:tokio::sync::mpsc::Sender<RawNotes>,v:Option<MisskeyChannel>,state:&mut WSState)->Result<(),reqwest_websocket::Error>{
+	if let Some(ch)=v{
+		if state.stream.is_none(){
+			state.stream=Some({
+				use reqwest_websocket::RequestBuilderExt;
+				let url=reqwest::Url::parse(config.instance.as_ref().unwrap());
+				let mut url=match url {
+					Ok(url)=>url,
+					Err(e)=>{
+						eprintln!("{:?}",e);
+						return Ok(());
+					}
+				};
+				if url.scheme()=="http"{
+					url.set_scheme("ws").unwrap();
+				}else{
+					url.set_scheme("wss").unwrap();
+				}
+				url.set_path("streaming");
+				let query=format!("i={}",config.token.as_ref().unwrap());
+				url.set_query(Some(&query));
+				// create a GET request, upgrade it and send it.
+				let response = Client::default()
+					.get(url)
+					.upgrade() // <-- prepares the websocket upgrade.
+					.send()
+					.await?;
+				let websocket = response.into_websocket().await?;
+				let ws=Arc::new(WSStream::new(websocket));
+				let ws0=ws.clone();
+				tokio::runtime::Handle::current().spawn(async move{
+					let _=ws0.load().await;
+				});
+				ws
+			});
+		}
+		let sender=sender.clone();
+		println!("=============openstream===============");
+		let id=state.stream.as_ref().unwrap().open(move|res: WSChannel|{
+			let sender=sender.clone();
+			let f:futures::future::BoxFuture<'static,()>=Box::pin(async move{
+				if res.t.as_str()=="note"{
+					if let Ok(note)=serde_json::value::from_value::<RawNote>(res.body){
+						if let Err(e)=sender.send(RawNotes::Single(note)).await{
+							eprintln!("{:?}",e);
+						}
+					}
+				}
+			});
+			f
+		},ch).await?;
+		if let Some(id)=state.now_stream{
+			state.stream.as_ref().unwrap().close_channel(id).await;
+		}
+		state.now_stream=Some(id);
+	}else{
+		if let Some(id)=state.now_stream.take(){
+			state.stream.as_ref().unwrap().close_channel(id).await;
+		}
+		if let Some(stream)=state.stream.take(){
+			stream.close_connection().await;
+		}
+	}
+	Ok(())
+}
+enum RawNotes{
+	Single(RawNote),
+	Array(Vec<RawNote>),
+}
+struct WSChannelListener(Box<dyn FnMut(WSChannel)->futures::future::BoxFuture<'static, ()>+Send+Sync>);
+impl <F> From<F> for WSChannelListener where F:FnMut(WSChannel)->futures::future::BoxFuture<'static, ()>+Send+Sync+'static{
+	fn from(value: F) -> Self {
+		Self(Box::new(value))
+	}
+}
+pub enum MisskeyChannel{
+	GlobalTimeline,
+	HomeTimeline,
+}
+impl MisskeyChannel{
+	pub fn id(&self)->&'static str{
+		match self {
+			MisskeyChannel::GlobalTimeline => "globalTimeline",
+			MisskeyChannel::HomeTimeline => "homeTimeline",
+		}
+	}
+}
+impl From<TimeLine> for MisskeyChannel{
+	fn from(value: TimeLine) -> Self {
+		match value {
+			TimeLine::Global => Self::GlobalTimeline,
+			TimeLine::Home => Self::HomeTimeline,
+		}
+	}
+}
+struct WSStream{
+	channel_listener:Mutex<HashMap<u32,WSChannelListener>>,
+	last_id:AtomicU32,
+	send: Mutex<futures::prelude::stream::SplitSink<reqwest_websocket::WebSocket, reqwest_websocket::Message>>,
+	recv: Mutex<futures::prelude::stream::SplitStream<reqwest_websocket::WebSocket>>,
+}
+impl WSStream{
+	fn new(websocket:reqwest_websocket::WebSocket)->Self{
+		let (send,recv)=websocket.split();
+		Self{
+			channel_listener:Mutex::new(HashMap::new()),
+			last_id:AtomicU32::new(0),
+			send:Mutex::new(send),
+			recv:Mutex::new(recv),
+		}
+	}
+	async fn open(&self,listener:impl Into<WSChannelListener>,channel:MisskeyChannel)->Result<u32,reqwest_websocket::Error>{
+		let mut websocket=self.send.lock().await;
+		let id=self.last_id.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+		println!("open channel {}",id);
+		let mut channel_listener=self.channel_listener.lock().await;
+		channel_listener.insert(id,listener.into());
+		let q=format!("{{\"type\":\"connect\",\"body\":{{\"channel\":\"{}\",\"id\":\"{}\",\"params\":{{\"withRenotes\":true,\"withCats\":false}}}}}}",channel.id(),id);
+		websocket.send(reqwest_websocket::Message::Text(q.into())).await.map(|_|id)
+	}
+	async fn close_channel(&self,id:u32){
+		println!("close channel {}",id);
+		let mut websocket=self.send.lock().await;
+		let q=format!("{{\"type\":\"disconnect\",\"body\":{{\"id\":\"{}\"}}}}",id);
+		let _=websocket.send(reqwest_websocket::Message::Text(q.into())).await;
+		let mut channel_listener=self.channel_listener.lock().await;
+		channel_listener.remove(&id);
+	}
+	async fn load(&self)->Result<(),reqwest_websocket::Error>{
+		loop{
+			let mut websocket=self.recv.lock().await;
+			if let Some(message) = websocket.try_next().await? {
+				match message {
+					reqwest_websocket::Message::Text(text) =>{
+						if let Ok(Some(channel))=serde_json::from_str::<WSResult>(text.as_str()).map(|res|{
+							if res.t.as_str()=="channel"{
+								serde_json::value::from_value::<WSChannel>(res.body).ok()
+							}else{
+								None
+							}
+						}){
+							if let Ok(id)=u32::from_str_radix(channel.id.as_str(),10){
+								let mut r=self.channel_listener.lock().await;
+								if let Some(handle)=r.get_mut(&id){
+									handle.0(channel).await;
+								}else{
+									println!("unknown channel event {}",id);
+								}
+							}
+						}
+					},
+					_=>{}
+				}
+			}
+		}
+	}
+	async fn close_connection(&self){
+		let mut websocket=self.send.lock().await;
+		let _=websocket.close();
+	}
+}
+#[derive(Serialize,Deserialize,Debug)]
+struct WSResult{
+	#[serde(rename = "type")]
+	t:String,
+	body:serde_json::Value,
+}
+#[derive(Serialize,Deserialize,Debug)]
+struct WSChannel{
+	#[serde(rename = "type")]
+	t:String,
+	id:String,
+	body:serde_json::Value,
+}
 async fn load_note(
 	mut note:RawNote,
 	note_cache:&mut HashMap<String, Arc<data_model::Note>>,
 	user_cache:&mut HashMap<String, Arc<data_model::UserProfile>>,
 	instance_cache:&mut HashMap<String, Arc<data_model::FediverseInstance>>,
 	file_cache:&mut HashMap<String, NoteFile>,
-	local_instance:impl AsRef<str>,
 	emoji_cache:&EmojiCache,
-)->Option<data_model::Note>{
+)->Option<(Arc<data_model::Note>,bool)>{
+	if let Some(n)=note_cache.get(&note.id){
+		return Some((n.clone(),true));
+	}
 	println!("load note {}",note.id);
 	// Print the text of the note, if any.
-	fn format_timestamp(unix_sec:i64)->String{
-		let secs_ago=Utc::now().timestamp()-unix_sec;
-		if secs_ago>12*30*24*60*60{
-			format!("{}年前",secs_ago/(12*30*24*60*60))
-		}else if secs_ago>30*24*60*60{
-			format!("{}ヶ月前",secs_ago/(30*24*60*60))
-		}else if secs_ago>7*24*60*60{
-			format!("{}週間前",secs_ago/(7*24*60*60))
-		}else if secs_ago>24*60*60{
-			format!("{}日前",secs_ago/(24*60*60))
-		}else if secs_ago>60*60{
-			format!("{}時間前",secs_ago/(60*60))
-		}else if secs_ago>60{
-			format!("{}分前",secs_ago/60)
-		}else{
-			format!("{}秒前",secs_ago)
-		}
-	}
 	async fn note_user(
 		user_cache:&mut HashMap<String,Arc<data_model::UserProfile>>,
 		instance_cache: &mut HashMap<String, Arc<data_model::FediverseInstance>>,
 		user:&RawUser,
-		local_instance:impl AsRef<str>,
 		emoji_cache:&data_model::EmojiCache,
 	)->Arc<data_model::UserProfile>{
 		let user_id=&user.id;
 		match user_cache.get(user_id){
 			Some(hit)=>hit.clone(),
 			None=>{
-				let user=data_model::UserProfile::load(&user,instance_cache,local_instance,emoji_cache).await;
+				let user=data_model::UserProfile::load(&user,instance_cache,emoji_cache).await;
 				let user=Arc::new(user);
 				user_cache.insert(user_id.to_owned(),user.clone());
 				user
@@ -225,13 +438,12 @@ async fn load_note(
 		let n=if let Some(n)=note_cache.get(&quote.id){
 			n.clone()
 		}else{
-			let user=note_user(user_cache,instance_cache,&quote.user,&local_instance,&emoji_cache).await;
+			let user=note_user(user_cache,instance_cache,&quote.user,&emoji_cache).await;
 			let reactions=data_model::Reactions::load(&quote,&emoji_cache).await;
 			let created_at=quote.created_at();
 			let n=Arc::new(crate::data_model::Note{
 				quote:None,
 				created_at,
-				time_label:format_timestamp(created_at.timestamp()),
 				visibility:quote.visibility.as_str().into(),
 				reactions,
 				files:note_files(&quote,file_cache),
@@ -243,13 +455,12 @@ async fn load_note(
 			note_cache.insert(n.id.to_owned(),n.clone());
 			n
 		};
-		let user=note_user(user_cache,instance_cache,&note.user,&local_instance,&emoji_cache).await;
+		let user=note_user(user_cache,instance_cache,&note.user,&emoji_cache).await;
 		let reactions=data_model::Reactions::load(&note,&emoji_cache).await;
 		let created_at=note.created_at();
-		Some(crate::data_model::Note{
+		Some((Arc::new(crate::data_model::Note{
 			quote:Some(n),
 			created_at,
-			time_label:format_timestamp(created_at.timestamp()),
 			visibility:note.visibility.as_str().into(),
 			reactions,
 			files:note_files(&note,file_cache),
@@ -257,15 +468,14 @@ async fn load_note(
 			id:note.id,
 			cw:data_model::MFMString::new_opt(note.cw,note.emojis.as_ref(),user.instance.as_ref(),&emoji_cache).await,
 			user,
-		})
+		}),false))
 	}else if note.text.is_some() {
-		let user=note_user(user_cache,instance_cache,&note.user,local_instance,&emoji_cache).await;
+		let user=note_user(user_cache,instance_cache,&note.user,&emoji_cache).await;
 		let reactions=data_model::Reactions::load(&note,&emoji_cache).await;
 		let created_at=note.created_at();
-		Some(crate::data_model::Note{
+		Some((Arc::new(crate::data_model::Note{
 			quote:None,
 			created_at,
-			time_label:format_timestamp(created_at.timestamp()),
 			visibility:note.visibility.as_str().into(),
 			reactions,
 			files:note_files(&note,file_cache),
@@ -273,7 +483,7 @@ async fn load_note(
 			id:note.id,
 			cw:data_model::MFMString::new_opt(note.cw,note.emojis.as_ref(),user.instance.as_ref(),&emoji_cache).await,
 			user,
-		})
+		}),false))
 	}else{
 		None
 	}
@@ -370,7 +580,7 @@ struct TimelineRequestJson{
 	limit:u8,
 	i:String,
 }
-#[derive(Clone,Debug)]
+#[derive(PartialEq,Eq,Copy,Clone,Debug)]
 pub enum TimeLine{
 	Global,
 	Home,
@@ -383,7 +593,7 @@ impl ToString for TimeLine{
 		}.to_owned()
 	}
 }
-async fn read_timeline(client:&Client,local_instance:&str,token:String,(limit,tl):(u8,TimeLine))->Result<Vec<RawNote>,String>{
+async fn read_timeline(client:&Client,local_instance:&str,token:String,(limit,tl,knwon):(u8,TimeLine,Vec<Arc<data_model::Note>>))->Result<Vec<RawNote>,String>{
 	let req_builder=client.post(format!("{}/api/notes/{}",local_instance,tl.to_string()));
 	//global-timeline
 	//timeline
@@ -405,8 +615,26 @@ async fn read_timeline(client:&Client,local_instance:&str,token:String,(limit,tl
 	let htl=htl.bytes().await;
 	let htl=htl.map_err(|e|e.to_string())?;
 	let htl=serde_json::from_slice(&htl);
-	let htl=htl.map_err(|e|e.to_string())?;
-	Ok(htl)
+	let htl: Vec<RawNote>=htl.map_err(|e|e.to_string())?;
+	let mut known_notes_map=HashMap::new();
+	for note in knwon{
+		known_notes_map.insert(note.id.as_str().to_owned(),note);
+	}
+	let mut htl_update=vec![];
+	for note in htl.into_iter().rev(){
+		if let Some(hit)=known_notes_map.get(note.id.as_str()){
+			let mut all=0;
+			for (_,r) in &note.reactions{
+				all+=*r as u128;
+			}
+			if hit.reactions.all==all{
+				continue;
+			}
+		}
+		htl_update.push(note);
+	}
+	println!("INSERT {}",htl_update.len());
+	Ok(htl_update)
 }
 #[derive(Serialize,Deserialize,Debug)]
 pub struct RawNote{

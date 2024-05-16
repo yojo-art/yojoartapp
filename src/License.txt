@@ -20,9 +20,14 @@
 "urlencoding" は https://crates.io/crates/urlencoding から取得する事ができます
 
 "tokio"
-このソフトウェアでは MIT License でライセンスされた "urlencoding" ライブラリを使用しています。
+このソフトウェアでは MIT License でライセンスされた "tokio" ライブラリを使用しています。
 ライセンス全文は https://github.com/tokio-rs/tokio/blob/tokio-1.37.0/LICENSE で確認できます
 "tokio" は https://crates.io/crates/tokio から取得する事ができます
+
+"reqwest-websocket"
+このソフトウェアでは MIT License でライセンスされた "reqwest-websocket" ライブラリを使用しています。
+ライセンス全文は https://github.com/jgraef/reqwest-websocket/blob/v0.3.0/LICENSE で確認できます
+"reqwest-websocket" は https://crates.io/crates/reqwest-websocket から取得する事ができます
 
 "egui"
 "eframe"
