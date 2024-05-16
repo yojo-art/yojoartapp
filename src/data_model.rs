@@ -17,14 +17,39 @@ pub struct Note{
 	pub user:Arc<UserProfile>,
 	pub quote:Option<Arc<Note>>,
 	pub text:MFMString,
-	pub time_label:String,
 	pub visibility:Visibility,
 	pub reactions: Reactions,
 	pub files:Vec<NoteFile>,
 	pub cw:Option<MFMString>,
 	pub created_at: chrono::prelude::DateTime<chrono::prelude::Utc>,
 }
+impl PartialEq for Note{
+	fn eq(&self, other: &Self) -> bool {
+		self.id==other.id&&
+		self.reactions.all==other.reactions.all&&
+		self.quote.is_some()==other.quote.is_some()&&
+		self.created_at==other.created_at
+	}
+}
 impl Note{
+	pub fn created_at_label(&self)->String{
+		let secs_ago=chrono::Utc::now().timestamp()-self.created_at.timestamp();
+		if secs_ago>12*30*24*60*60{
+			format!("{}年前",secs_ago/(12*30*24*60*60))
+		}else if secs_ago>30*24*60*60{
+			format!("{}ヶ月前",secs_ago/(30*24*60*60))
+		}else if secs_ago>7*24*60*60{
+			format!("{}週間前",secs_ago/(7*24*60*60))
+		}else if secs_ago>24*60*60{
+			format!("{}日前",secs_ago/(24*60*60))
+		}else if secs_ago>60*60{
+			format!("{}時間前",secs_ago/(60*60))
+		}else if secs_ago>60{
+			format!("{}分前",secs_ago/60)
+		}else{
+			format!("{}秒前",secs_ago)
+		}
+	}
 	pub async fn system_message(text:impl Into<String>,name:impl Into<String>)->Self{
 		let emoji_cache=EmojiCache::new("","localhost",Arc::new(HashMap::new()));
 		let instance:Option<Arc<FediverseInstance>>=None;
@@ -40,10 +65,10 @@ impl Note{
 			}),
 			quote: None,
 			text: MFMString::new(text.into(),None,instance,&emoji_cache).await,
-			time_label: "".to_owned(),
 			visibility: Visibility::Public,
 			reactions: Reactions{
 				emojis: vec![],
+				all:0,
 			},
 			files: vec![],
 			cw:None,
@@ -135,7 +160,6 @@ impl UserProfile{
 	pub async fn load(
 		user:&RawUser,
 		cache:&mut HashMap<String,Arc<FediverseInstance>>,
-		local_instance:impl AsRef<str>,
 		emoji_cache:&EmojiCache,
 	) -> Self {
 		let f=match (&user.host,&user.instance) {
@@ -154,7 +178,7 @@ impl UserProfile{
 			_=>None
 		};
 		let icon_url=user.avatar_url.as_ref().map(|u|u.to_string()).unwrap_or_else(||
-			format!("{}/avatar/@{}{}",local_instance.as_ref(),user.username,user.host.as_ref().map(|s|format!("@{}",s)).unwrap_or_default())
+			format!("{}/avatar/@{}{}",emoji_cache.local_instance.as_str(),user.username,user.host.as_ref().map(|s|format!("@{}",s)).unwrap_or_default())
 		);
 		let display_name=MFMString::new(user.name.as_ref().unwrap_or_else(||&user.username).to_owned(),user.emojis.as_ref(),f.as_ref(),&emoji_cache).await;
 		Self{
@@ -220,6 +244,7 @@ impl EmojiCache{
 #[derive(Debug)]
 pub struct Reactions{
 	pub emojis:Vec<(Emoji,u64)>,
+	pub all:u128,
 }
 impl Reactions{
 	pub fn emojis(&self)->impl Iterator<Item=&Arc<UrlImage>>{
@@ -232,12 +257,14 @@ impl Reactions{
 		emoji_cache:&EmojiCache,
 	) -> Self {
 		let mut emojis=vec![];
+		let mut all_count=0;
 		for (reaction,count) in &note.reactions{
 			if reaction.ends_with("@.:"){//isLocalEmoji
 				let id=reaction[1..reaction.len()-3].to_string();
 				let url=emoji_cache.local_emojis.get(&id);
 				if let Some(url)=url{
 					let emoji=emoji_cache.load(id,url.as_str()).await;
+					all_count+=*count as u128;
 					emojis.push((emoji,*count));
 				}else{
 					println!("ローカル絵文字が見つからない?{}",id);
@@ -248,6 +275,7 @@ impl Reactions{
 				let url=note.reaction_emojis.get(&id);
 				if let Some(url)=url{
 					let emoji=emoji_cache.load(id,url.as_str()).await;
+					all_count+=*count as u128;
 					emojis.push((emoji,*count));
 				}else{
 					println!("リモート絵文字が見つからない?{}",id);
@@ -257,6 +285,7 @@ impl Reactions{
 				//let id=hex::encode(reaction.0.as_bytes());
 				if let Some((id,url))=unicode_to_emoji(&reaction,&emoji_cache.local_instance){
 					let emoji=emoji_cache.load(id,url.as_str()).await;
+					all_count+=*count as u128;
 					emojis.push((emoji,*count));
 				}else{
 					println!("Unicode絵文字が見つからない?{}",reaction);
@@ -265,7 +294,8 @@ impl Reactions{
 		}
 		emojis.sort_by(|(_,a),(_,b)|b.cmp(a));
 		Self {
-			emojis
+			emojis,
+			all:all_count,
 		}
 	}
 }

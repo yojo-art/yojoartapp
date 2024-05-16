@@ -35,6 +35,7 @@ pub struct LocaleFile{
 	appname:String,
 	close_license:String,
 	show_license:String,
+	websocket:String,
 }
 fn load_config()->(String,Arc<ConfigFile>,Arc<LocaleFile>){
 	let config_path=match std::env::var("YAC_CONFIG_PATH"){
@@ -209,6 +210,8 @@ fn common<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+'static{
 				client,
 				themify,
 				view_license:false,
+				now_tl:load_misskey::TimeLine::Home,
+				auto_update:false,
 			})
 		}),
 	).unwrap();
@@ -224,11 +227,13 @@ struct MyApp<F>{
 	animate_frame:u64,
 	delay_assets:tokio::sync::mpsc::Sender<Arc<data_model::Note>>,
 	show_cw:std::sync::Mutex<Option<String>>,
-	reload: tokio::sync::mpsc::Sender<(u8,load_misskey::TimeLine)>,
+	reload: tokio::sync::mpsc::Sender<load_misskey::TLOption>,
 	media_view:std::sync::Mutex<Option<ZoomMediaView>>,
 	client: Client,
 	themify:egui::FontFamily,
 	view_license:bool,
+	auto_update:bool,
+	now_tl:load_misskey::TimeLine,
 }
 struct ZoomMediaView{
 	original_img:Arc<data_model::UrlImage>,
@@ -290,11 +295,23 @@ impl <F> eframe::App for MyApp<F> where F:FnMut(&mut bool)+'static{
 			ui.horizontal_wrapped(|ui|{
 				ui.heading(&self.config.2.appname);
 				fn load<F>(app:&mut MyApp<F>,limit:u8,tl:load_misskey::TimeLine){
-					app.notes.clear();
 					let reload=app.reload.clone();
 					if reload.max_capacity()==reload.capacity(){
+						if app.now_tl!=tl{
+							app.notes.clear();
+						}
+						app.now_tl=tl;
+						let known_notes=app.notes.clone();
+						let websocket=app.auto_update;
 						std::thread::spawn(move||{
-							let _=tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(reload.send((limit,tl)));
+							tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
+								let _=reload.send(load_misskey::TLOption{
+									limit,
+									tl,
+									known_notes,
+									websocket,
+								}).await;
+							});
 						});
 					}
 				}
@@ -303,6 +320,9 @@ impl <F> eframe::App for MyApp<F> where F:FnMut(&mut bool)+'static{
 				}
 				if ui.button("GTL").clicked(){
 					load(self,30,load_misskey::TimeLine::Global);
+				}
+				if ui.checkbox(&mut self.auto_update,&self.config.2.websocket).changed(){
+					load(self,30,self.now_tl);
 				}
 				/*
 				if ui.button("キャッシュ削除").clicked(){
@@ -345,10 +365,25 @@ impl <F> eframe::App for MyApp<F> where F:FnMut(&mut bool)+'static{
 						}
 					}
 				});
-				self.notes.push(n);
-				self.notes.sort_by(|a,b|{
-					b.created_at.timestamp_millis().cmp(&a.created_at.timestamp_millis())
-				});
+				let mut index=None;
+				let mut idx=0;
+				for old in &self.notes{
+					if old.id==n.id{
+						index=Some(idx as usize);
+						break;
+					}
+					idx+=1;
+				}
+				if let Some(rm)=index{
+					//同一ノート内容更新
+					self.notes.remove(rm);
+					self.notes.insert(rm,n);
+				}else{
+					self.notes.push(n);
+				}
+				if self.notes.len()>30{
+					self.notes.remove(0);
+				}
 			}
 //			ui.add(egui::Slider::new(&mut self.age, 0..=120).text("age"));
 /*
@@ -359,7 +394,7 @@ impl <F> eframe::App for MyApp<F> where F:FnMut(&mut bool)+'static{
 */
 			ScrollArea::vertical().show(ui,|ui|{
 				let width=ui.available_width();
-				for note in &self.notes{
+				for note in self.notes.iter().rev(){
 					ui.allocate_ui([width,0f32].into(),|ui|{
 						self.note_ui(ui,note);
 					});
@@ -377,12 +412,12 @@ impl <F> MyApp<F>{
 				data_model::Visibility::Followers => "\u{e62b}",
 				data_model::Visibility::Specified => "\u{e75a}",
 			};
-			Cow::Owned(format!("{} {}",note.time_label.as_str(),s))
+			note.created_at_label()+s
 		}else{
-			Cow::Borrowed(note.time_label.as_str())
+			note.created_at_label()
 		};
 		let font=egui::FontId::new(13.0,self.themify.clone());
-		egui::Label::new(egui::RichText::new(label.as_ref()).font(font.clone()).color(Color32::from_black_alpha(0))).wrap(false).ui(ui);
+		egui::Label::new(egui::RichText::new(&label).font(font.clone()).color(Color32::from_black_alpha(0))).wrap(false).ui(ui);
 		ui.with_layout(egui::Layout::right_to_left(egui::Align::Max),|ui|{
 			egui::Label::new(egui::RichText::new(label).font(font)).wrap(false).ui(ui).on_hover_text(format!("{:?}",note.visibility));
 		});
