@@ -36,6 +36,7 @@ pub struct LocaleFile{
 	close_license:String,
 	show_license:String,
 	websocket:String,
+	nsfw_always_show:String,
 }
 fn load_config()->(String,Arc<ConfigFile>,Arc<LocaleFile>){
 	let config_path=match std::env::var("YAC_CONFIG_PATH"){
@@ -212,6 +213,7 @@ fn common<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+'static{
 				view_license:false,
 				now_tl:load_misskey::TimeLine::Home,
 				auto_update:false,
+				nsfw_always_show:false,
 			})
 		}),
 	).unwrap();
@@ -234,6 +236,7 @@ struct MyApp<F>{
 	view_license:bool,
 	auto_update:bool,
 	now_tl:load_misskey::TimeLine,
+	nsfw_always_show:bool,
 }
 struct ZoomMediaView{
 	original_img:Arc<data_model::UrlImage>,
@@ -324,6 +327,7 @@ impl <F> eframe::App for MyApp<F> where F:FnMut(&mut bool)+'static{
 				if ui.checkbox(&mut self.auto_update,&self.config.2.websocket).changed(){
 					load(self,30,self.now_tl);
 				}
+				ui.checkbox(&mut self.nsfw_always_show,&self.config.2.nsfw_always_show);
 				/*
 				if ui.button("キャッシュ削除").clicked(){
 					let _=std::fs::remove_dir_all(data_model::cache_dir());
@@ -506,7 +510,8 @@ impl <F> MyApp<F>{
 					let width=ui.available_width();
 					for file in &note.files{
 						let show_sensitive=file.show_sensitive.load(std::sync::atomic::Ordering::Relaxed);
-						let img_opt=if file.is_sensitive&&!show_sensitive{
+						let show_sensitive=!file.is_sensitive||show_sensitive||self.nsfw_always_show;
+						let img_opt=if !show_sensitive{
 							None
 						}else{
 							file.image(self.animate_frame).map(|v|Some(v))
@@ -523,7 +528,7 @@ impl <F> MyApp<F>{
 							let img=img.frame(false);
 							let res=img.ui(ui);
 							if res.clicked(){
-								if file.is_sensitive&&!show_sensitive{
+								if !show_sensitive{
 									file.show_sensitive.store(true,std::sync::atomic::Ordering::Relaxed);
 								}else if let Some(url)=file.original_url.clone(){
 									if let Ok(mut lock)=self.media_view.lock(){
@@ -551,7 +556,7 @@ impl <F> MyApp<F>{
 								}
 								println!("ZOOM {:?}",file.original_url);
 							}
-							if file.is_sensitive&&!show_sensitive{
+							if !show_sensitive{
 								let mut ui=ui.child_ui(res.rect,egui::Layout::top_down(egui::Align::Center));
 								let width=ui.available_width();
 								let height=ui.available_height();

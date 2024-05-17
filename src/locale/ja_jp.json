@@ -1,4 +1,5 @@
 {
+	"nsfw_always_show":"NSFWを常に表示",
 	"websocket":"自動更新",
 	"show_nsfw":"センシティブ\n添付メディア",
 	"show_cw":"[cw折りたたみ]",
