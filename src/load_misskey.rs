@@ -21,8 +21,6 @@ pub async fn load_misskey(
 	client:Client,
 	mut reload_event:Receiver<TLOption>,
 ){
-	let mut summaly_proxy="https://summaly.yojo.tokyo".to_owned();
-	let mut media_proxy="https://proxy.yojo.tokyo".to_owned();
 	if config.token.as_ref().is_none(){
 		let mes=format!("token が指定されていません");
 		if let Err(e)=note_ui.send(Arc::new(data_model::Note::system_message(mes,"").await)).await{
@@ -47,7 +45,7 @@ pub async fn load_misskey(
 		return;
 	}
 	let meta=meta.unwrap();
-	//media_proxy=meta.media_proxy;
+	let media_proxy=meta.media_proxy;
 	println!("media_proxy:{}",media_proxy);
 	let mut local_emojis=HashMap::new();
 	if let Ok(emojis)=emojis(&client,&local_instance).await{
