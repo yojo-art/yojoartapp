@@ -1,5 +1,5 @@
 
-use std::{collections::HashMap, sync::{atomic::AtomicU32, Arc}};
+use std::{collections::HashMap, sync::{atomic::{AtomicBool, AtomicU32}, Arc}};
 
 use futures::{ SinkExt, StreamExt, TryStreamExt};
 use reqwest::Client;
@@ -69,7 +69,7 @@ pub async fn load_misskey(
 			now_stream: None,
 		};
 		while let Some(limit) = reload_event.recv().await{
-			eprintln!("{:?}",read_websocket(config.clone(),raw_note_sender.clone(),if limit.websocket{
+			eprintln!("read_websocket {:?}",read_websocket(config.clone(),raw_note_sender.clone(),if limit.websocket{
 				Some(limit.tl.into())
 			}else{
 				None
@@ -81,12 +81,12 @@ pub async fn load_misskey(
 				if let Err(e)=note_ui0.send(Arc::new(data_model::Note::system_message(mes,"").await)).await{
 					eprintln!("{:?}",e);
 				}
-				return;
-			}
-			let notes=htl.unwrap();
-			println!("{} notes get",notes.len());
-			if let Err(e)=raw_note_sender.send(RawNotes::Array(notes)).await{
-				eprintln!("{:?}",e);
+			}else{
+				let notes=htl.unwrap();
+				println!("{} notes get",notes.len());
+				if let Err(e)=raw_note_sender.send(RawNotes::Array(notes)).await{
+					eprintln!("{:?}",e);
+				}
 			}
 		}
 	});
@@ -248,12 +248,13 @@ async fn read_websocket(config:Arc<ConfigFile>,sender:tokio::sync::mpsc::Sender<
 				tokio::runtime::Handle::current().spawn(async move{
 					let _=ws0.load().await;
 				});
+				println!("=============Open Connection===============");
 				ws
 			});
 		}
 		let sender=sender.clone();
-		println!("=============openstream===============");
-		let id=state.stream.as_ref().unwrap().open(move|res: WSChannel|{
+		println!("=============Open Stream===============");
+		state.stream.as_ref().unwrap().open(move|res: WSChannel|{
 			let sender=sender.clone();
 			let f:futures::future::BoxFuture<'static,()>=Box::pin(async move{
 				if res.t.as_str()=="note"{
@@ -267,12 +268,15 @@ async fn read_websocket(config:Arc<ConfigFile>,sender:tokio::sync::mpsc::Sender<
 			f
 		},ch).await?;
 		if let Some(id)=state.now_stream{
-			state.stream.as_ref().unwrap().close_channel(id).await;
+			if state.stream.as_ref().unwrap().close_channel(id).await.is_ok(){
+				state.now_stream=Some(id);
+			}
 		}
-		state.now_stream=Some(id);
 	}else{
 		if let Some(id)=state.now_stream.take(){
-			state.stream.as_ref().unwrap().close_channel(id).await;
+			if let Err(e)=state.stream.as_ref().unwrap().close_channel(id).await{
+				println!("close stream error {:?}",e);
+			}
 		}
 		if let Some(stream)=state.stream.take(){
 			stream.close_connection().await;
@@ -311,69 +315,104 @@ impl From<TimeLine> for MisskeyChannel{
 	}
 }
 struct WSStream{
-	channel_listener:Mutex<HashMap<u32,WSChannelListener>>,
+	channel_listener:Arc<Mutex<HashMap<u32,WSChannelListener>>>,
 	last_id:AtomicU32,
-	send: Mutex<futures::prelude::stream::SplitSink<reqwest_websocket::WebSocket, reqwest_websocket::Message>>,
-	recv: Mutex<futures::prelude::stream::SplitStream<reqwest_websocket::WebSocket>>,
+	send: Arc<Mutex<futures::prelude::stream::SplitSink<reqwest_websocket::WebSocket, reqwest_websocket::Message>>>,
+	recv: Mutex<Option<futures::prelude::stream::SplitStream<reqwest_websocket::WebSocket>>>,
+	exit: Arc<AtomicBool>,
 }
 impl WSStream{
 	fn new(websocket:reqwest_websocket::WebSocket)->Self{
 		let (send,recv)=websocket.split();
 		Self{
-			channel_listener:Mutex::new(HashMap::new()),
+			channel_listener:Arc::new(Mutex::new(HashMap::new())),
 			last_id:AtomicU32::new(0),
-			send:Mutex::new(send),
-			recv:Mutex::new(recv),
+			send:Arc::new(Mutex::new(send)),
+			recv:Mutex::new(Some(recv)),
+			exit:Arc::new(AtomicBool::new(false)),
 		}
 	}
 	async fn open(&self,listener:impl Into<WSChannelListener>,channel:MisskeyChannel)->Result<u32,reqwest_websocket::Error>{
 		let mut websocket=self.send.lock().await;
 		let id=self.last_id.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
-		println!("open channel {}",id);
+		println!("open channel... {}",id);
 		let mut channel_listener=self.channel_listener.lock().await;
 		channel_listener.insert(id,listener.into());
 		let q=format!("{{\"type\":\"connect\",\"body\":{{\"channel\":\"{}\",\"id\":\"{}\",\"params\":{{\"withRenotes\":true,\"withCats\":false}}}}}}",channel.id(),id);
-		websocket.send(reqwest_websocket::Message::Text(q.into())).await.map(|_|id)
+		websocket.send(reqwest_websocket::Message::Text(q.into())).await?;
+		println!("opend channel {}",id);
+		Ok(id)
 	}
-	async fn close_channel(&self,id:u32){
-		println!("close channel {}",id);
+	async fn close_channel(&self,id:u32)->Result<u32,reqwest_websocket::Error>{
+		println!("close channel... {}",id);
 		let mut websocket=self.send.lock().await;
 		let q=format!("{{\"type\":\"disconnect\",\"body\":{{\"id\":\"{}\"}}}}",id);
-		let _=websocket.send(reqwest_websocket::Message::Text(q.into())).await;
+		websocket.send(reqwest_websocket::Message::Text(q.into())).await?;
 		let mut channel_listener=self.channel_listener.lock().await;
 		channel_listener.remove(&id);
+		println!("closed channel {}",id);
+		Ok(id)
 	}
-	async fn load(&self)->Result<(),reqwest_websocket::Error>{
-		loop{
-			let mut websocket=self.recv.lock().await;
-			if let Some(message) = websocket.try_next().await? {
-				match message {
-					reqwest_websocket::Message::Text(text) =>{
-						if let Ok(Some(channel))=serde_json::from_str::<WSResult>(text.as_str()).map(|res|{
-							if res.t.as_str()=="channel"{
-								serde_json::value::from_value::<WSChannel>(res.body).ok()
-							}else{
-								None
-							}
-						}){
-							if let Ok(id)=u32::from_str_radix(channel.id.as_str(),10){
-								let mut r=self.channel_listener.lock().await;
-								if let Some(handle)=r.get_mut(&id){
-									handle.0(channel).await;
-								}else{
-									println!("unknown channel event {}",id);
-								}
-							}
-						}
-					},
-					_=>{}
-				}
-			}
+	async fn load(&self){
+		let websocket=self.recv.lock().await.take();
+		if websocket.is_none(){
+			return;
 		}
+		let mut websocket=websocket.unwrap();
+		let channel_listener=self.channel_listener.clone();
+		let sender=self.send.clone();
+		let exit0=self.exit.clone();
+		std::thread::spawn(move||{
+			let rt=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+			let handle=rt.spawn(async move{
+				while let Ok(Some(message)) = websocket.try_next().await {
+					match message {
+						reqwest_websocket::Message::Text(text) =>{
+							if let Ok(Some(channel))=serde_json::from_str::<WSResult>(text.as_str()).map(|res|{
+								if res.t.as_str()=="channel"{
+									serde_json::value::from_value::<WSChannel>(res.body).ok()
+								}else{
+									None
+								}
+							}){
+								if let Ok(id)=u32::from_str_radix(channel.id.as_str(),10){
+									let mut r=channel_listener.lock().await;
+									if let Some(handle)=r.get_mut(&id){
+										handle.0(channel).await;
+									}else{
+										println!("unknown channel event {}",id);
+									}
+								}
+							}else{
+								println!("parse error {}",text);
+							}
+						},
+						_=>{}
+					}
+				}
+				println!("close websocket");
+			});
+			rt.block_on(async{
+				while !exit0.load(std::sync::atomic::Ordering::Relaxed){
+					let mut websocket=sender.lock().await;
+					if let Err(e)=websocket.send(reqwest_websocket::Message::Text("h".into())).await{
+						println!("ping error {:?}",e);
+					}else{
+						println!("ping ok");
+					}
+					drop(websocket);
+					tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+				}
+			});
+			handle.abort();
+		});
 	}
 	async fn close_connection(&self){
+		println!("close connection...");
+		self.exit.store(true,std::sync::atomic::Ordering::Relaxed);
 		let mut websocket=self.send.lock().await;
-		let _=websocket.close();
+		let res=websocket.close().await;
+		println!("closed connection {:?}",res);
 	}
 }
 #[derive(Serialize,Deserialize,Debug)]
@@ -607,6 +646,7 @@ async fn read_timeline(client:&Client,local_instance:&str,token:String,(limit,tl
 	let req_body=serde_json::to_string(&req_body).map_err(|e|e.to_string())?;
 	let req_builder=req_builder.header(reqwest::header::CONTENT_LENGTH,req_body.len());
 	let req_builder=req_builder.body(req_body);
+	let req_builder=req_builder.timeout(std::time::Duration::from_secs(5));
 	let htl=req_builder.send().await;
 	let htl=htl.map_err(|e|e.to_string())?;
 	if htl.status()!=200{
