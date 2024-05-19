@@ -399,7 +399,7 @@ impl WSStream{
 						println!("ping ok");
 					}
 					drop(websocket);
-					tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+					tokio::time::sleep(tokio::time::Duration::from_millis(60*1000)).await;
 				}
 			});
 			handle.abort();

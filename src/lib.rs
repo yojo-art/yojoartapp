@@ -2,11 +2,11 @@
 
 mod data_model;
 mod load_misskey;
-use std::{borrow::{Borrow, Cow}, io::{Read, Write}, sync::Arc};
+use std::{io::{Read, Write}, sync::Arc};
 
 use eframe::{egui, NativeOptions};
 
-use egui::{Color32, FontData, FontFamily, Label, ScrollArea, Widget};
+use egui::{Color32, FontData, FontFamily, ScrollArea, Widget};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Receiver;
@@ -37,8 +37,10 @@ pub struct LocaleFile{
 	show_license:String,
 	websocket:String,
 	nsfw_always_show:String,
+	open_settings:String,
+	close_settings:String,
 }
-fn load_config()->(String,Arc<ConfigFile>,Arc<LocaleFile>){
+fn load_config()->(String,Arc<ConfigFile>){
 	let config_path=match std::env::var("YAC_CONFIG_PATH"){
 		Ok(path)=>{
 			if path.is_empty(){
@@ -60,9 +62,12 @@ fn load_config()->(String,Arc<ConfigFile>,Arc<LocaleFile>){
 		std::fs::File::create(&config_path).expect("create default config.json").write_all(default_config.as_bytes()).unwrap();
 	}
 	let config:ConfigFile=serde_json::from_reader(std::fs::File::open(&config_path).unwrap()).unwrap();
+	(config_path,Arc::new(config))
+}
+fn load_locale()->Arc<LocaleFile>{
 	let locale_json=include_str!("locale/ja_jp.json");
 	let locale:LocaleFile=serde_json::from_reader(std::io::Cursor::new(locale_json)).unwrap();
-	(config_path,Arc::new(config),Arc::new(locale))
+	Arc::new(locale)
 }
 async fn delay_assets(mut recv:Receiver<Arc<data_model::Note>>,ctx:egui::Context,client:Client,config:Arc<ConfigFile>){
 	//tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
@@ -144,6 +149,7 @@ async fn delay_assets(mut recv:Receiver<Arc<data_model::Note>>,ctx:egui::Context
 }
 fn common<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+'static{
 	let config=load_config();
+	let locale=load_locale();
 	let (assets,assets_recv)=tokio::sync::mpsc::channel(10);
 	let (note_ui,recv)=tokio::sync::mpsc::channel(4);
 	let (reload,reload_recv)=tokio::sync::mpsc::channel(1);
@@ -197,6 +203,7 @@ fn common<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+'static{
 			});
 			Box::new(MyApp{
 				config,
+				locale,
 				input_text:String::new(),
 				show_ime:false,
 				button_handle:Box::new(ime_show),
@@ -207,19 +214,21 @@ fn common<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+'static{
 				delay_assets:assets,
 				show_cw:std::sync::Mutex::new(None),
 				reload,
-				media_view:std::sync::Mutex::new(None),
 				client,
 				themify,
-				view_license:false,
 				now_tl:load_misskey::TimeLine::Home,
 				auto_update:false,
 				nsfw_always_show:false,
+				view_media:std::sync::Mutex::new(None),
+				view_license:false,
+				view_config:false,
 			})
 		}),
 	).unwrap();
 }
 struct MyApp<F>{
-	config:(String, Arc<ConfigFile>,Arc<LocaleFile>),
+	config:(String, Arc<ConfigFile>),
+	locale:Arc<LocaleFile>,
 	input_text:String,
 	show_ime:bool,
 	button_handle: Box<F>,
@@ -230,13 +239,14 @@ struct MyApp<F>{
 	delay_assets:tokio::sync::mpsc::Sender<Arc<data_model::Note>>,
 	show_cw:std::sync::Mutex<Option<String>>,
 	reload: tokio::sync::mpsc::Sender<load_misskey::TLOption>,
-	media_view:std::sync::Mutex<Option<ZoomMediaView>>,
 	client: Client,
 	themify:egui::FontFamily,
-	view_license:bool,
 	auto_update:bool,
 	now_tl:load_misskey::TimeLine,
 	nsfw_always_show:bool,
+	view_media:std::sync::Mutex<Option<ZoomMediaView>>,
+	view_license:bool,
+	view_config:bool,
 }
 struct ZoomMediaView{
 	original_img:Arc<data_model::UrlImage>,
@@ -249,165 +259,185 @@ impl <F> eframe::App for MyApp<F> where F:FnMut(&mut bool)+'static{
 			self.animate_frame=chrono::Utc::now().timestamp_millis() as u64;
 		}
 		egui::CentralPanel::default().show(ctx, |ui| {
-			if let Ok(mut lock)=self.media_view.lock(){
-				if let Some(v)=lock.as_ref(){
-					fn view<F>(ui:&mut egui::Ui,img:egui::Image<'static>,close:F)where F:FnOnce()->(){
-						let img=img.max_width(ui.available_width());
-						let img=img.max_height(ui.available_height());
-						let img=if let Some((x,y))=img.size().map(|v|(v.x,v.y)){
-							img.fit_to_exact_size(egui::Vec2 { x: x*10f32, y: y*10f32 })
-						}else{
-							img
-						};
-						let img=egui::Button::image(img);
-						let img=img.stroke(egui::Stroke::new(0f32,Color32::from_black_alpha(0u8)));
-						let img=img.frame(false);
-						ui.horizontal_centered(|ui|{
-							if img.ui(ui).clicked(){
-								close();
-							}
-						});
-					}
-					if let Some(img)=v.original_img.get(self.animate_frame){
-						view(ui,img,||{
-							lock.take();
-						});
-						return;
-					}else{
-						if let Some(img)=&v.preview{
-							view(ui,img.clone(),||{
-								lock.take();
-							});
-						}
-						return;
-					}
+			if let Ok(mut lock)=self.view_media.lock(){
+				if lock.is_some(){
+					self.media(ui,&mut lock);
+					return;
 				}
 			}
 			ui.add_space(self.config.1.top.unwrap_or(0) as f32);
 			if self.view_license{
-				if ui.button(&self.config.2.close_license).clicked(){
-					self.view_license=false;
-					ctx.request_repaint();
-					return;
-				}
-				ScrollArea::vertical().show(ui,|ui|{
-					ui.label(include_str!("License.txt"));
-				});
+				self.license(ui,ctx);
 				return;
 			}
-			ui.horizontal_wrapped(|ui|{
-				ui.heading(&self.config.2.appname);
-				fn load<F>(app:&mut MyApp<F>,limit:u8,tl:load_misskey::TimeLine){
-					let reload=app.reload.clone();
-					if reload.max_capacity()==reload.capacity(){
-						if app.now_tl!=tl{
-							app.notes.clear();
-						}
-						app.now_tl=tl;
-						let known_notes=app.notes.clone();
-						let websocket=app.auto_update;
-						std::thread::spawn(move||{
-							tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
-								let _=reload.send(load_misskey::TLOption{
-									limit,
-									tl,
-									known_notes,
-									websocket,
-								}).await;
-							});
-						});
-					}
-				}
-				if ui.button("HTL").clicked(){
-					load(self,30,load_misskey::TimeLine::Home);
-				}
-				if ui.button("GTL").clicked(){
-					load(self,30,load_misskey::TimeLine::Global);
-				}
-				if ui.checkbox(&mut self.auto_update,&self.config.2.websocket).changed(){
-					load(self,30,self.now_tl);
-				}
-				ui.checkbox(&mut self.nsfw_always_show,&self.config.2.nsfw_always_show);
-				/*
-				if ui.button("キャッシュ削除").clicked(){
-					let _=std::fs::remove_dir_all(data_model::cache_dir());
-				}
-				*/
-				if ui.button(&self.config.2.show_license).clicked(){
-					self.view_license=true;
-					ctx.request_repaint();
-					return;
-				}
-				if !self.rcv.is_empty(){
-					ui.with_layout(egui::Layout::right_to_left(egui::Align::Max),|ui|{
-						egui::ProgressBar::new(0f32).desired_width(10f32).animate(true).ui(ui);
-					});
+			if self.view_config{
+				self.config(ui,ctx);
+				return;
+			}
+			self.timeline(ui,ctx);
+		});
+	}
+}
+impl <F> MyApp<F>{
+	fn config(&mut self,ui:&mut egui::Ui,ctx:&egui::Context){
+		if ui.button(&self.locale.close_settings).clicked(){
+			self.view_config=false;
+			ctx.request_repaint();
+			return;
+		}
+		ui.checkbox(&mut self.nsfw_always_show,&self.locale.nsfw_always_show);
+		if ui.button(&self.locale.show_license).clicked(){
+			self.view_license=true;
+			ctx.request_repaint();
+			return;
+		}
+	}
+	fn media(&self,ui:&mut egui::Ui,lock:&mut Option<ZoomMediaView>){
+		fn view<F>(ui:&mut egui::Ui,img:egui::Image<'static>,close:F)where F:FnOnce()->(){
+			let img=img.max_width(ui.available_width());
+			let img=img.max_height(ui.available_height());
+			let img=if let Some((x,y))=img.size().map(|v|(v.x,v.y)){
+				img.fit_to_exact_size(egui::Vec2 { x: x*10f32, y: y*10f32 })
+			}else{
+				img
+			};
+			let img=egui::Button::image(img);
+			let img=img.stroke(egui::Stroke::new(0f32,Color32::from_black_alpha(0u8)));
+			let img=img.frame(false);
+			ui.horizontal_centered(|ui|{
+				if img.ui(ui).clicked(){
+					close();
 				}
 			});
-			if self.config.1.token.is_none(){
-				ui.heading("tokenが指定されていません");
-				ui.label(format!("{}を編集してください",self.config.0));
+		}
+		let v=lock.as_ref().unwrap();
+		if let Some(img)=v.original_img.get(self.animate_frame){
+			view(ui,img,||{
+				lock.take();
+			});
+			return;
+		}else{
+			if let Some(img)=&v.preview{
+				view(ui,img.clone(),||{
+					lock.take();
+				});
 			}
-			if self.config.1.instance.is_none(){
-				ui.heading("instanceが指定されていません(https://misskey.example.com)");
-				ui.label(format!("{}を編集してください",self.config.0));
+		}
+	}
+	fn license(&mut self,ui:&mut egui::Ui,ctx:&egui::Context){
+		if ui.button(&self.locale.close_license).clicked(){
+			self.view_license=false;
+			ctx.request_repaint();
+		}
+		ScrollArea::vertical().show(ui,|ui|{
+			ui.label(include_str!("License.txt"));
+		});
+	}
+	fn timeline(&mut self,ui:&mut egui::Ui,ctx:&egui::Context){
+		ui.horizontal_wrapped(|ui|{
+			ui.heading(&self.locale.appname);
+			fn load<F>(app:&mut MyApp<F>,limit:u8,tl:load_misskey::TimeLine){
+				let reload=app.reload.clone();
+				if reload.max_capacity()==reload.capacity(){
+					if app.now_tl!=tl{
+						app.notes.clear();
+					}
+					app.now_tl=tl;
+					let known_notes=app.notes.clone();
+					let websocket=app.auto_update;
+					std::thread::spawn(move||{
+						tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
+							let _=reload.send(load_misskey::TLOption{
+								limit,
+								tl,
+								known_notes,
+								websocket,
+							}).await;
+						});
+					});
+				}
 			}
-			ui.text_edit_singleline(&mut self.input_text);
-			if let Ok(n)=self.rcv.try_recv(){
-				//blurhashは即座に読み込む
-				tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
+			if ui.button("HTL").clicked(){
+				load(self,30,load_misskey::TimeLine::Home);
+			}
+			if ui.button("GTL").clicked(){
+				load(self,30,load_misskey::TimeLine::Global);
+			}
+			if ui.checkbox(&mut self.auto_update,&self.locale.websocket).changed(){
+				load(self,30,self.now_tl);
+			}
+			if ui.button(&self.locale.open_settings).clicked(){
+				self.view_config=true;
+				ctx.request_repaint();
+				return;
+			}
+			if !self.rcv.is_empty(){
+				ui.with_layout(egui::Layout::right_to_left(egui::Align::Max),|ui|{
+					egui::ProgressBar::new(0f32).desired_width(10f32).animate(true).ui(ui);
+				});
+			}
+		});
+		if self.config.1.token.is_none(){
+			ui.heading("tokenが指定されていません");
+			ui.label(format!("{}を編集してください",self.config.0));
+		}
+		if self.config.1.instance.is_none(){
+			ui.heading("instanceが指定されていません(https://misskey.example.com)");
+			ui.label(format!("{}を編集してください",self.config.0));
+		}
+		ui.text_edit_singleline(&mut self.input_text);
+		if let Ok(n)=self.rcv.try_recv(){
+			//blurhashは即座に読み込む
+			tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
+				for f in &n.files{
+					if let Some(blurhash)=&f.blurhash{
+						blurhash.load_gpu(ctx,&self.config.1).await;
+					}
+				}
+				if let Some(n)=n.quote.as_ref(){
 					for f in &n.files{
 						if let Some(blurhash)=&f.blurhash{
 							blurhash.load_gpu(ctx,&self.config.1).await;
 						}
 					}
-					if let Some(n)=n.quote.as_ref(){
-						for f in &n.files{
-							if let Some(blurhash)=&f.blurhash{
-								blurhash.load_gpu(ctx,&self.config.1).await;
-							}
-						}
-					}
-				});
-				let mut index=None;
-				let mut idx=0;
-				for old in &self.notes{
-					if old.id==n.id{
-						index=Some(idx as usize);
-						break;
-					}
-					idx+=1;
-				}
-				if let Some(rm)=index{
-					//同一ノート内容更新
-					self.notes.remove(rm);
-					self.notes.insert(rm,n);
-				}else{
-					self.notes.push(n);
-				}
-				if self.notes.len()>30{
-					self.notes.remove(0);
-				}
-			}
-//			ui.add(egui::Slider::new(&mut self.age, 0..=120).text("age"));
-/*
-			if ui.button("Increment").clicked() {
-				self.age += 1;
-				(self.button_handle)(&mut self.show_ime);
-			}
-*/
-			ScrollArea::vertical().show(ui,|ui|{
-				let width=ui.available_width();
-				for note in self.notes.iter().rev(){
-					ui.allocate_ui([width,0f32].into(),|ui|{
-						self.note_ui(ui,note);
-					});
 				}
 			});
+			let mut index=None;
+			let mut idx=0;
+			for old in &self.notes{
+				if old.id==n.id{
+					index=Some(idx as usize);
+					break;
+				}
+				idx+=1;
+			}
+			if let Some(rm)=index{
+				//同一ノート内容更新
+				self.notes.remove(rm);
+				self.notes.insert(rm,n);
+			}else{
+				self.notes.push(n);
+			}
+			if self.notes.len()>30{
+				self.notes.remove(0);
+			}
+		}
+//			ui.add(egui::Slider::new(&mut self.age, 0..=120).text("age"));
+/*
+		if ui.button("Increment").clicked() {
+			self.age += 1;
+			(self.button_handle)(&mut self.show_ime);
+		}
+*/
+		ScrollArea::vertical().show(ui,|ui|{
+			let width=ui.available_width();
+			for note in self.notes.iter().rev(){
+				ui.allocate_ui([width,0f32].into(),|ui|{
+					self.note_ui(ui,note);
+				});
+			}
 		});
 	}
-}
-impl <F> MyApp<F>{
 	fn time_label(&self,ui:&mut egui::Ui,note:&data_model::Note){
 		let label=if note.visibility!=data_model::Visibility::Public{
 			let s=match note.visibility {
@@ -492,7 +522,7 @@ impl <F> MyApp<F>{
 					let mut show_cw=self.show_cw.lock().unwrap();
 					let mut checked=Some(note.id.as_str())==show_cw.as_ref().map(|s|s.as_str());
 					cw.render(ui,false,&self.dummy,self.animate_frame);
-					if ui.checkbox(&mut checked,self.config.2.show_cw.as_str()).changed(){
+					if ui.checkbox(&mut checked,self.locale.show_cw.as_str()).changed(){
 						*show_cw=if checked{
 							Some(note.id.to_owned())
 						}else{
@@ -531,7 +561,7 @@ impl <F> MyApp<F>{
 								if !show_sensitive{
 									file.show_sensitive.store(true,std::sync::atomic::Ordering::Relaxed);
 								}else if let Some(url)=file.original_url.clone(){
-									if let Ok(mut lock)=self.media_view.lock(){
+									if let Ok(mut lock)=self.view_media.lock(){
 										let preview=file.image(self.animate_frame).map(|v|Some(v)).unwrap_or_else(||{
 											file.blurhash.as_ref().map(|img|img.get(self.animate_frame)).unwrap_or_default()
 										});
@@ -561,7 +591,7 @@ impl <F> MyApp<F>{
 								let width=ui.available_width();
 								let height=ui.available_height();
 								let job = egui::text::LayoutJob::single_section(
-									self.config.2.show_nsfw.clone(),
+									self.locale.show_nsfw.clone(),
 									egui::TextFormat {
 										color:Color32::from_gray(0),
 										font_id:egui::FontId{
@@ -626,7 +656,7 @@ impl <F> MyApp<F>{
 					let icon=icon.rounding(egui::Rounding::from(10f32));
 					icon.ui(ui);
 					note.user.display_name.render(ui,true,&self.dummy,self.animate_frame);
-					ui.label(self.config.2.renote.as_str());
+					ui.label(self.locale.renote.as_str());
 					//時刻と可視性
 					self.time_label(ui,note);
 				});
