@@ -1,4 +1,6 @@
 {
+	"open_settings":"設定を開く",
+	"close_settings":"設定を閉じる",
 	"nsfw_always_show":"NSFWを常に表示",
 	"websocket":"自動更新",
 	"show_nsfw":"センシティブ\n添付メディア",
