@@ -1,12 +1,12 @@
 
-use std::{collections::HashMap, sync::{atomic::{AtomicBool, AtomicU32}, Arc}};
+use std::{collections::HashMap, hash::{Hash, Hasher}, sync::{atomic::{AtomicBool, AtomicU32}, Arc}};
 
 use futures::{ SinkExt, StreamExt, TryStreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc::{Receiver, Sender}, Mutex};
 
-use crate::{data_model::{self, EmojiCache, NoteFile}, ConfigFile};
+use crate::{data_model::{self, DelayAssets, EmojiCache, NoteFile}, ConfigFile};
 
 pub struct TLOption{
 	pub(crate) limit:u8,
@@ -14,12 +14,17 @@ pub struct TLOption{
 	pub(crate) known_notes:Vec<Arc<data_model::Note>>,
 	pub(crate) websocket:bool,
 }
+pub enum LoadSrc{
+	TimeLine(TLOption),
+	Note(String),
+}
 pub async fn load_misskey(
 	config:Arc<ConfigFile>,
 	note_ui:Sender<Arc<data_model::Note>>,
-	delay_assets:Sender<Arc<data_model::Note>>,
+	delay_assets:Sender<DelayAssets>,
 	client:Client,
-	mut reload_event:Receiver<TLOption>,
+	mut reload_event:Receiver<LoadSrc>,
+	emojis_send:Sender<EmojiCache>,
 ){
 	if config.token.as_ref().is_none(){
 		let mes=format!("token が指定されていません");
@@ -55,6 +60,7 @@ pub async fn load_misskey(
 	}
 	println!("{} local emojis",local_emojis.len());
 	let emoji_cache=data_model::EmojiCache::new(media_proxy,&local_instance,Arc::new(local_emojis));
+	let _=emojis_send.send(emoji_cache.clone()).await;
 	let mut instance_cache=HashMap::new();
 	let mut user_cache=HashMap::new();
 	let mut file_cache=HashMap::new();
@@ -67,24 +73,58 @@ pub async fn load_misskey(
 			now_stream: None,
 		};
 		while let Some(limit) = reload_event.recv().await{
-			eprintln!("read_websocket {:?}",read_websocket(config.clone(),raw_note_sender.clone(),if limit.websocket{
-				Some(limit.tl.into())
-			}else{
-				None
-			},&mut state).await);
-			let limit=(limit.limit,limit.tl,limit.known_notes);
-			let htl=read_timeline(&client,config.instance.as_ref().unwrap(),config.token.as_ref().unwrap().clone(),limit.clone()).await;
-			if let Err(e)=htl{
-				let mes=format!("get api/notes/{} error {}",limit.1.to_string(),e);
-				if let Err(e)=note_ui0.send(Arc::new(data_model::Note::system_message(mes,"").await)).await{
-					eprintln!("{:?}",e);
-				}
-			}else{
-				let notes=htl.unwrap();
-				println!("{} notes get",notes.len());
-				if let Err(e)=raw_note_sender.send(RawNotes::Array(notes)).await{
-					eprintln!("{:?}",e);
-				}
+			match limit{
+				LoadSrc::TimeLine(limit) => {
+					eprintln!("read_websocket {:?}",read_websocket(config.clone(),raw_note_sender.clone(),if limit.websocket{
+						Some(limit.tl.into())
+					}else{
+						None
+					},&mut state).await);
+					let limit=(limit.limit,limit.tl,limit.known_notes);
+					let htl=read_timeline(&client,config.instance.as_ref().unwrap(),config.token.as_ref().unwrap().clone(),limit.clone()).await;
+					if let Err(e)=htl{
+						let mes=format!("get api/notes/{} error {}",limit.1.to_string(),e);
+						if let Err(e)=note_ui0.send(Arc::new(data_model::Note::system_message(mes,"").await)).await{
+							eprintln!("{:?}",e);
+						}
+					}else{
+						let notes=htl.unwrap();
+						println!("{} notes get",notes.len());
+						if let Err(e)=raw_note_sender.send(RawNotes::Array(notes)).await{
+							eprintln!("{:?}",e);
+						}
+					}
+				},
+				LoadSrc::Note(note_id) => {
+					let note=client.post(format!("{}/api/notes/show",config.instance.as_ref().unwrap()));
+					#[derive(Serialize,Debug)]
+					struct ShowPayload{
+						i:String,
+						#[serde(rename = "noteId")]
+						note_id:String,
+					}
+					let note=note.header(reqwest::header::CONTENT_TYPE,"application/json");
+					let note=note.body(serde_json::to_string(&ShowPayload{
+						i:config.token.as_ref().unwrap().clone(),
+						note_id,
+					}).unwrap());
+					match note.send().await{
+						Ok(json) => {
+							println!("{}",json.status());
+							if let Ok(json)=json.bytes().await{
+								if let Ok(note)=serde_json::from_slice::<RawNote>(&json){
+									println!("RAW NOTE");
+									if let Err(e)=raw_note_sender.send(RawNotes::Single(note)).await{
+										let _=note_ui0.send(Arc::new(data_model::Note::system_message(format!("{:?}",e),"").await)).await;
+									}
+								}
+							}
+						},
+						Err(e) => {
+							let _=note_ui0.send(Arc::new(data_model::Note::system_message(format!("{:?}",e),"").await)).await;
+						},
+					}
+				},
 			}
 		}
 	});
@@ -103,7 +143,7 @@ pub async fn load_misskey(
 					if !is_cache{
 						let delay_assets=delay_assets.clone();
 						tokio::runtime::Handle::current().spawn(async move{
-							if let Err(e)=delay_assets.send(n).await{
+							if let Err(e)=delay_assets.send(DelayAssets::Note(n)).await{
 								eprintln!("{:?}",e);
 							}
 						});
@@ -131,7 +171,7 @@ pub async fn load_misskey(
 				for n in note_load.into_iter().rev(){
 					let delay_assets=delay_assets.clone();
 					tokio::runtime::Handle::current().spawn(async move{
-						if let Err(e)=delay_assets.send(n).await{
+						if let Err(e)=delay_assets.send(DelayAssets::Note(n)).await{
 							eprintln!("{:?}",e);
 						}
 					});
@@ -435,7 +475,10 @@ async fn load_note(
 	emoji_cache:&EmojiCache,
 )->Option<(Arc<data_model::Note>,bool)>{
 	if let Some(n)=note_cache.get(&note.id){
-		return Some((n.clone(),true));
+		let hash=reactions_hash(&note);
+		if n.reactions.hash==hash{
+			return Some((n.clone(),true));
+		}
 	}
 	println!("load note {}",note.id);
 	// Print the text of the note, if any.
@@ -661,11 +704,8 @@ async fn read_timeline(client:&Client,local_instance:&str,token:String,(limit,tl
 	let mut htl_update=vec![];
 	for note in htl.into_iter().rev(){
 		if let Some(hit)=known_notes_map.get(note.id.as_str()){
-			let mut all=0;
-			for (_,r) in &note.reactions{
-				all+=*r as u128;
-			}
-			if hit.reactions.all==all{
+			let hash=reactions_hash(&note);
+			if hit.reactions.hash==hash{
 				continue;
 			}
 		}
@@ -673,6 +713,16 @@ async fn read_timeline(client:&Client,local_instance:&str,token:String,(limit,tl
 	}
 	println!("INSERT {}",htl_update.len());
 	Ok(htl_update)
+}
+fn reactions_hash(note:&RawNote)->u64{
+	let mut hasher = std::collections::hash_map::DefaultHasher::new();
+	let mut hash=0;
+	for (id,r) in &note.reactions{
+		id.hash(&mut hasher);
+		hash+=*r;
+	}
+	hash+=hasher.finish();
+	hash
 }
 #[derive(Serialize,Deserialize,Debug)]
 pub struct RawNote{

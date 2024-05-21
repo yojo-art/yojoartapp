@@ -69,10 +69,11 @@ fn load_locale()->Arc<LocaleFile>{
 	let locale:LocaleFile=serde_json::from_reader(std::io::Cursor::new(locale_json)).unwrap();
 	Arc::new(locale)
 }
-async fn delay_assets(mut recv:Receiver<Arc<data_model::Note>>,ctx:egui::Context,client:Client,config:Arc<ConfigFile>){
+async fn delay_assets(mut recv:Receiver<data_model::DelayAssets>,ctx:egui::Context,client:Client,config:Arc<ConfigFile>){
 	//tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 	let mut note_buf=Vec::with_capacity(4);
 	let mut job_buf=Vec::with_capacity(4);
+	let mut emoji_job_buf=Vec::with_capacity(4);
 	loop{
 		let limit=note_buf.capacity();
 		if recv.recv_many(&mut note_buf,limit).await==0{
@@ -135,31 +136,80 @@ async fn delay_assets(mut recv:Receiver<Arc<data_model::Note>>,ctx:egui::Context
 				futures::future::join_all(job_buf_emojis.drain(..)),
 			);
 		}
-		for note in note_buf.drain(..){
-			if let Some(note)=note.quote.clone(){
-				job_buf.push(load_note(note,&ctx,&client,&config));
+		for a in note_buf.drain(..){
+			match a {
+				data_model::DelayAssets::Note(note) => {
+					let ctx=ctx.clone();
+					let client=client.clone();
+					let config=config.clone();
+					let q=note.quote.clone();
+					job_buf.push(async move{
+						futures::join!(
+							async{
+								if let Some(note)=q{
+									load_note(note,&ctx,&client,&config).await
+								}
+							},
+							load_note(note,&ctx,&client,&config)
+						);
+					});
+				},
+				data_model::DelayAssets::Emoji(cache,emoji) => {
+					let ctx=ctx.clone();
+					let client=client.clone();
+					let config=config.clone();
+					emoji_job_buf.push(async move{
+						let (id,url)=emoji.to_id_url(&cache);
+						println!("load emoji {} \t\t{}",id,&url);
+						let emoji=cache.load(emoji.into_id(),&url).await;
+						let img=emoji.url_image();
+						if !img.loaded(){
+							img.load(&client).await;
+							img.load_gpu(&ctx,&config).await;
+						}
+					});
+				},
 			}
-			job_buf.push(load_note(note,&ctx,&client,&config));
 		}
-		futures::future::join_all(job_buf.drain(..)).await;
-		ctx.request_repaint();
+		let d:Vec<_>=job_buf.drain(..).collect();
+		let d2:Vec<_>=emoji_job_buf.drain(..).collect();
+		let ctx=ctx.clone();
+		tokio::runtime::Handle::current().spawn(async move{
+			futures::join!(
+				futures::future::join_all(d),
+				futures::future::join_all(d2),
+			);
+			ctx.request_repaint();
+		});
 	}
 	//tokio::time::sleep(tokio::time::Duration::from_millis(10000)).await;
 	//user.icon.unload().await;
 }
 fn common<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+'static{
+	/*
+	let emoji_src=include_str!("unicodeemoji.txt").split("\n");
+	let mut f=std::fs::File::create("unicodeemoji.utf32").unwrap();
+	f.write_all(&[00,00,0xFE,0xFF]).unwrap();
+	for emoji in emoji_src{
+		let c=u32::from_str_radix(&emoji[2..],16).unwrap();
+		f.write_all(&c.to_be_bytes()).unwrap();
+		//let c=char::from_u32(c).unwrap();
+	}
+	drop(f);
+	*/
 	let config=load_config();
 	let locale=load_locale();
 	let (assets,assets_recv)=tokio::sync::mpsc::channel(10);
 	let (note_ui,recv)=tokio::sync::mpsc::channel(4);
 	let (reload,reload_recv)=tokio::sync::mpsc::channel(1);
+	let (emojis_send,emojis_recv)=tokio::sync::mpsc::channel(1);
 	let config0=config.1.clone();
 	let client=Client::new();
 	let client0=client.clone();
 	let assets0=assets.clone();
 	std::thread::spawn(move||{
 		let rt=tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-		rt.block_on(load_misskey::load_misskey(config0,note_ui,assets0,client0,reload_recv))
+		rt.block_on(load_misskey::load_misskey(config0,note_ui,assets0,client0,reload_recv,emojis_send))
 	});
 	let dummy=data_model::UrlImage::dummy();
 	eframe::run_native(
@@ -205,6 +255,10 @@ fn common<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+'static{
 				config,
 				locale,
 				input_text:String::new(),
+				emojis:None,
+				reaction_table:vec![],
+				emojis_recv,
+				reaction_picker:std::sync::Mutex::new(None),
 				show_ime:false,
 				button_handle:Box::new(ime_show),
 				notes:vec![],
@@ -229,6 +283,10 @@ fn common<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+'static{
 struct MyApp<F>{
 	config:(String, Arc<ConfigFile>),
 	locale:Arc<LocaleFile>,
+	emojis:Option<data_model::EmojiCache>,
+	reaction_table:Vec<data_model::LocalEmojis>,
+	emojis_recv:Receiver<data_model::EmojiCache>,
+	reaction_picker:std::sync::Mutex<Option<String>>,
 	input_text:String,
 	show_ime:bool,
 	button_handle: Box<F>,
@@ -236,9 +294,9 @@ struct MyApp<F>{
 	rcv:Receiver<Arc<data_model::Note>>,
 	dummy: data_model::UrlImage,
 	animate_frame:u64,
-	delay_assets:tokio::sync::mpsc::Sender<Arc<data_model::Note>>,
+	delay_assets:tokio::sync::mpsc::Sender<data_model::DelayAssets>,
 	show_cw:std::sync::Mutex<Option<String>>,
-	reload: tokio::sync::mpsc::Sender<load_misskey::TLOption>,
+	reload: tokio::sync::mpsc::Sender<load_misskey::LoadSrc>,
 	client: Client,
 	themify:egui::FontFamily,
 	auto_update:bool,
@@ -257,6 +315,22 @@ impl <F> eframe::App for MyApp<F> where F:FnMut(&mut bool)+'static{
 		if self.config.1.is_animation.unwrap_or(data_model::DEFAULT_ANIMATION){
 			ctx.request_repaint();
 			self.animate_frame=chrono::Utc::now().timestamp_millis() as u64;
+		}
+		if let Ok(emoji)=self.emojis_recv.try_recv(){
+			self.reaction_table.clear();
+			let mut local_emojis=vec![];
+			for id in emoji.local_emojis.iter(){
+				local_emojis.push(id);
+			}
+			local_emojis.sort();
+			for (id,url) in local_emojis{
+				self.reaction_table.push(data_model::LocalEmojis::InstanceLocal(id.clone(),url.clone()));
+			}
+			let unicode_emojis=data_model::UnicodeEmoji::load_all();
+			for c in unicode_emojis{
+				self.reaction_table.push(data_model::LocalEmojis::Unicode(c));
+			}
+			self.emojis=Some(emoji);
 		}
 		egui::CentralPanel::default().show(ctx, |ui| {
 			if let Ok(mut lock)=self.view_media.lock(){
@@ -347,12 +421,12 @@ impl <F> MyApp<F>{
 					let websocket=app.auto_update;
 					std::thread::spawn(move||{
 						tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
-							let _=reload.send(load_misskey::TLOption{
+							let _=reload.send(load_misskey::LoadSrc::TimeLine(load_misskey::TLOption{
 								limit,
 								tl,
 								known_notes,
 								websocket,
-							}).await;
+							})).await;
 						});
 					});
 				}
@@ -371,7 +445,7 @@ impl <F> MyApp<F>{
 				ctx.request_repaint();
 				return;
 			}
-			if !self.rcv.is_empty(){
+			if !self.rcv.is_empty()||!self.emojis_recv.is_empty(){
 				ui.with_layout(egui::Layout::right_to_left(egui::Align::Max),|ui|{
 					egui::ProgressBar::new(0f32).desired_width(10f32).animate(true).ui(ui);
 				});
@@ -623,10 +697,11 @@ impl <F> MyApp<F>{
 				}
 				ui.horizontal_wrapped(|ui|{
 					for (emoji,count) in note.reactions.emojis.iter(){
+						let id=emoji.id_raw().id();
 						let img=emoji.image(self.animate_frame).unwrap_or_else(||self.dummy.get(self.animate_frame).unwrap());
 						let img=img.max_height(20f32);
 						let img=egui::widgets::Button::image_and_text(img, format!("{}",count));
-						let img=if emoji.id().contains("@"){
+						let img=if id.contains("@"){
 							let img=img.frame(false);
 							let img=img.fill(Color32::from_black_alpha(0u8));
 							img.stroke(egui::Stroke::new(0f32,Color32::from_black_alpha(0u8)))
@@ -634,10 +709,16 @@ impl <F> MyApp<F>{
 							img
 						};
 						//ui.add_enabled(false,img).on_hover_text(emoji.id());
-						if img.ui(ui).on_hover_text(emoji.id()).clicked(){
+						if img.ui(ui).on_hover_text(id.as_str()).clicked(){
 							tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
-								let _=self.delay_assets.send(note.clone()).await;
+								let _=self.delay_assets.send(data_model::DelayAssets::Note(note.clone())).await;
 							});
+							if let Some(emojis)=self.emojis.as_ref(){
+								let e=data_model::LocalEmojis::from_id(emoji.id_raw().to_owned(),emojis);
+								if let Some(e)=e{
+									self.reaction_send(note,&e);
+								}
+							}
 						}
 					}
 				});
@@ -665,6 +746,21 @@ impl <F> MyApp<F>{
 		}else{
 			self.normal_note(ui,note,None,true);
 		}
+		if ui.button("Reaction").clicked(){
+			let mut lock=self.reaction_picker.lock().unwrap();
+			if lock.as_ref().map(|id|id==&note.id).unwrap_or_default(){
+				*lock=None;
+			}else{
+				*lock=Some(note.id.clone());
+			}
+		}
+		if let Some(id)=self.reaction_picker.lock().unwrap().as_ref(){
+			if id==&note.id{
+				if let Some(emojis)=&self.emojis{
+					self.reaction_picker(ui,emojis,&note);
+				}
+			}
+		}
 		//セパレーター
 		ui.add_space(5f32);
 		ui.separator();
@@ -672,5 +768,95 @@ impl <F> MyApp<F>{
 	}
 	fn get_image(&self,icon:&data_model::UrlImage)->egui::Image<'static>{
 		icon.get(self.animate_frame).unwrap_or_else(||self.dummy.get(self.animate_frame).unwrap())
+	}
+	fn reaction_send(&self,note:&data_model::Note,emoji:&data_model::LocalEmojis)->bool{
+		let build=self.client.post(format!("{}/api/notes/reactions/create",self.config.1.instance.as_ref().unwrap()));
+		let build=build.header(reqwest::header::CONTENT_TYPE,"application/json");
+		#[derive(Debug,Serialize,Deserialize)]
+		struct ReactionCreatepayload{
+			#[serde(rename = "noteId")]
+			note_id:String,
+			reaction:String,
+			i:String,
+		}
+		let payload=ReactionCreatepayload{
+			note_id:note.id.clone(),
+			reaction:emoji.reaction(),
+			i:self.config.1.token.as_ref().unwrap().clone(),
+		};
+		println!("リアクション送信 {:?}",payload);
+		let build=build.body(serde_json::to_string(&payload).unwrap());
+		let ok=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async{
+			let res=build.send().await;
+			match res{
+				Ok(res)=>{
+					let status=res.status().as_u16();
+					println!("ReactionSendStatus {}",status);
+					let ok=status==204;
+					if ok{
+						let _=self.reload.send(load_misskey::LoadSrc::Note(note.id.clone())).await;
+					}
+					ok
+				},
+				Err(e)=>{
+					eprintln!("{:?}",e);
+					false
+				}
+			}
+		});
+		ok
+	}
+	fn reaction_picker(&self,ui:&mut egui::Ui,emojis:&data_model::EmojiCache,note:&data_model::Note){
+		let emoji_size=25f32;
+		let width=ui.available_width();
+		let horizontal_count=(width/(emoji_size+15f32)-0.5).round() as usize;
+		let row_height=emoji_size+8f32;
+		//ui.label(format!("{}/{}",width,horizontal_count));
+		let rows=self.reaction_table.len()/horizontal_count+{
+			if self.reaction_table.len()%horizontal_count==0{
+				0
+			}else{
+				1
+			}
+		};
+		ui.allocate_ui([width,5f32*row_height].into(),|ui|{
+			ScrollArea::vertical()
+				.max_height(5f32*row_height)
+				.auto_shrink(false)
+				.id_source(&note.id)
+				.show_rows(ui,row_height,rows,|ui,row_range|{
+				for row in row_range{
+					let start=row*horizontal_count;
+					let end=start+horizontal_count;
+					let s=&self.reaction_table[start..end.min(self.reaction_table.len())];
+					ui.horizontal(|ui|{
+						for e in s{
+							let id=e.to_id_string().to_string();
+							let img=tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
+								let emoji=emojis.get(e.clone().into_id()).await;
+								if let Some(emoji)=emoji{
+									Some(emoji)
+								}else{
+									let _=self.delay_assets.send(data_model::DelayAssets::Emoji(emojis.clone(),e.clone())).await;
+									None
+								}
+							});
+							let img=match img.map(|img|img.get(self.animate_frame)).unwrap_or_default(){
+								Some(img)=>img,
+								None=>self.dummy.get(self.animate_frame).unwrap()
+							};
+							let img=img.fit_to_exact_size([f32::MAX,f32::MAX].into());
+							let img=img.max_width(emoji_size);
+							let img=img.max_height(emoji_size);
+							let bt=egui::Button::image(img).min_size([10f32,row_height].into());
+							let bt=bt.min_size([emoji_size+8.0,emoji_size+8.0].into());
+							if bt.ui(ui).on_hover_text(&id).clicked(){
+								self.reaction_send(note,e);
+							}
+						}
+					});
+				}
+			});
+		});
 	}
 }
