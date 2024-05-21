@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Debug, num::ParseIntError, sync::{atomic::AtomicBool, Arc}};
+use std::{borrow::Cow, collections::HashMap, fmt::Debug, hash::{Hash, Hasher}, io::Read, num::ParseIntError, sync::{atomic::AtomicBool, Arc}};
 
 use egui::Color32;
 use image::DynamicImage;
@@ -26,7 +26,7 @@ pub struct Note{
 impl PartialEq for Note{
 	fn eq(&self, other: &Self) -> bool {
 		self.id==other.id&&
-		self.reactions.all==other.reactions.all&&
+		self.reactions.hash==other.reactions.hash&&
 		self.quote.is_some()==other.quote.is_some()&&
 		self.created_at==other.created_at
 	}
@@ -68,7 +68,7 @@ impl Note{
 			visibility: Visibility::Public,
 			reactions: Reactions{
 				emojis: vec![],
-				all:0,
+				hash:0,
 			},
 			files: vec![],
 			cw:None,
@@ -195,7 +195,94 @@ pub struct EmojiCache{
 	media_proxy:String,
 	local_instance:String,
 	map:Arc<RwLock<HashMap<String,Arc<UrlImage>>>>,
-	local_emojis:Arc<HashMap<String,String>>,
+	pub local_emojis:Arc<HashMap<String,String>>,
+}
+pub enum DelayAssets{
+	Note(Arc<Note>),
+	Emoji(EmojiCache,LocalEmojis),
+}
+#[derive(Copy,Clone,Debug)]
+pub struct UnicodeEmoji(u32);
+impl UnicodeEmoji{
+	pub fn load_all()->Vec<UnicodeEmoji>{
+		let gz=include_bytes!("unicodeemoji.utf32.gz");
+		let mut gz=flate2::read::GzDecoder::new(std::io::Cursor::new(gz));
+		let mut res=vec![];
+		let mut buf=[0u8;4];
+		while let Ok(_)=gz.read_exact(&mut buf){
+			let c=u32::from_be_bytes(buf);
+			res.push(UnicodeEmoji(c));
+		}
+		res.remove(0);
+		res
+	}
+	fn to_id(&self)->String{
+		let id=hex::encode(self.0.to_be_bytes());
+		let mut offset=0;
+		for c in id.chars(){
+			if c=='0'{
+				offset+=1;
+			}else{
+				break;
+			}
+		}
+		id[offset..].to_owned()
+	}
+}
+#[derive(Clone,Debug)]
+pub enum LocalEmojis{
+	Unicode(UnicodeEmoji),
+	InstanceLocal(String,String),
+}
+impl LocalEmojis{
+	pub fn from_id(id:EmojiId,cache:&EmojiCache)->Option<Self>{
+		match id {
+			EmojiId::Unicode(c) => Some(Self::Unicode(c)),
+			EmojiId::Remote(_) => None,
+			EmojiId::Local(id) =>{
+				let url=cache.local_emojis.get(&id)?;
+				Some(Self::InstanceLocal(id,url.to_owned()))
+			},
+		}
+	}
+	pub fn into_id(self)->EmojiId{
+		match self{
+			Self::Unicode(e)=>{
+				EmojiId::Unicode(e)
+			},
+			Self::InstanceLocal(id,_url) =>{
+				EmojiId::Local(id)
+			},
+		}
+	}
+	pub fn to_id_string(&self)->Cow<String>{
+		match self{
+			Self::Unicode(e)=>{
+				Cow::Owned(e.to_id())
+			},
+			Self::InstanceLocal(id,_url) =>{
+				Cow::Borrowed(id)
+			},
+		}
+	}
+	pub fn to_id_url(&self,cache:&EmojiCache)->(String,String){
+		match self{
+			Self::Unicode(e)=>{
+				let id=e.to_id();
+				let url=format!("{}/twemoji/{}.svg",cache.local_instance,&id);
+				(id,url)
+			},
+			Self::InstanceLocal(id,url) =>{
+				(id.clone(),url.clone())
+			},
+		}
+	}
+	pub fn reaction(&self)->String{
+		match self{
+			LocalEmojis::Unicode(e) => char::from_u32(e.0).map(|v|v.to_string()).unwrap_or_default(),
+			LocalEmojis::InstanceLocal(id, _) => format!(":{}:",id),
+		}
+	}
 }
 impl EmojiCache{
 	pub fn new(media_proxy:impl Into<String>,local_instance:impl Into<String>,local_emojis:Arc<HashMap<String,String>>)->Self{
@@ -206,19 +293,22 @@ impl EmojiCache{
 			local_emojis,
 		}
 	}
-	pub async fn load(&self,unique_emoji_id:String,url:&str)->Emoji{
-		match self.map.read().await.get(&unique_emoji_id){
+	pub async fn get(&self,unique_emoji_id:EmojiId)->Option<Arc<UrlImage>>{
+		self.map.read().await.get(unique_emoji_id.id().as_str()).cloned()
+	}
+	pub async fn load(&self,unique_emoji_id:EmojiId,url:&str)->Emoji{
+		match self.map.read().await.get(unique_emoji_id.id().as_str()){
 			Some(hit) => return Emoji{
 				id: unique_emoji_id,
 				img: hit.clone(),
 			},
 			None => {},
 		}
-		println!("load emoji {}",unique_emoji_id);
+		println!("load emoji {:?}",unique_emoji_id);
 		let remote_url=urlencoding::encode(url);
 		let local_url=format!("{}/emoji.webp?url={}&emoji=1",self.media_proxy,remote_url);
 		let img:Arc<UrlImage>=Arc::new(local_url.into());
-		self.map.write().await.insert(unique_emoji_id.clone(),img.clone());
+		self.map.write().await.insert(unique_emoji_id.id().to_string(),img.clone());
 		Emoji{
 			id:unique_emoji_id,
 			img,
@@ -244,7 +334,7 @@ impl EmojiCache{
 #[derive(Debug)]
 pub struct Reactions{
 	pub emojis:Vec<(Emoji,u64)>,
-	pub all:u128,
+	pub hash:u64,
 }
 impl Reactions{
 	pub fn emojis(&self)->impl Iterator<Item=&Arc<UrlImage>>{
@@ -256,15 +346,18 @@ impl Reactions{
 		note: &RawNote,
 		emoji_cache:&EmojiCache,
 	) -> Self {
+		let mut hasher = std::collections::hash_map::DefaultHasher::new();
 		let mut emojis=vec![];
-		let mut all_count=0;
+		let mut hash=0;
 		for (reaction,count) in &note.reactions{
 			if reaction.ends_with("@.:"){//isLocalEmoji
 				let id=reaction[1..reaction.len()-3].to_string();
 				let url=emoji_cache.local_emojis.get(&id);
 				if let Some(url)=url{
+					reaction.hash(&mut hasher);
+					let id=EmojiId::Local(id);
 					let emoji=emoji_cache.load(id,url.as_str()).await;
-					all_count+=*count as u128;
+					hash+=*count;
 					emojis.push((emoji,*count));
 				}else{
 					println!("ローカル絵文字が見つからない?{}",id);
@@ -274,8 +367,10 @@ impl Reactions{
 				let id=reaction[1..reaction.len()-1].to_string();
 				let url=note.reaction_emojis.get(&id);
 				if let Some(url)=url{
+					reaction.hash(&mut hasher);
+					let id=EmojiId::Remote(id);
 					let emoji=emoji_cache.load(id,url.as_str()).await;
-					all_count+=*count as u128;
+					hash+=*count;
 					emojis.push((emoji,*count));
 				}else{
 					println!("リモート絵文字が見つからない?{}",id);
@@ -283,25 +378,29 @@ impl Reactions{
 			}else{
 				//おそらくUnicode絵文字
 				//let id=hex::encode(reaction.0.as_bytes());
-				if let Some((id,url))=unicode_to_emoji(&reaction,&emoji_cache.local_instance){
+				if let Some((c,url))=unicode_to_emoji(&reaction,&emoji_cache.local_instance){
+					char::from_u32(c.0).unwrap().to_string().hash(&mut hasher);
+					let id=EmojiId::Unicode(c);
 					let emoji=emoji_cache.load(id,url.as_str()).await;
-					all_count+=*count as u128;
+					hash+=*count;
 					emojis.push((emoji,*count));
 				}else{
 					println!("Unicode絵文字が見つからない?{}",reaction);
 				}
 			}
 		}
+		hash+=hasher.finish();
 		emojis.sort_by(|(_,a),(_,b)|b.cmp(a));
 		Self {
 			emojis,
-			all:all_count,
+			hash,
 		}
 	}
 }
-fn unicode_to_emoji(unicode:&str,local_instance:&str)->Option<(String,String)>{
+fn unicode_to_emoji(unicode:&str,local_instance:&str)->Option<(UnicodeEmoji,String)>{
 	let c=unicode.chars().next()?;
-	let id=hex::encode((c as u32).to_be_bytes());
+	let c=c as u32;
+	let id=hex::encode(c.to_be_bytes());
 	let mut offset=0;
 	for c in id.chars(){
 		if c=='0'{
@@ -312,11 +411,11 @@ fn unicode_to_emoji(unicode:&str,local_instance:&str)->Option<(String,String)>{
 	}
 	let id=id[offset..].to_owned();
 	let url=format!("{}/twemoji/{}.svg",local_instance,&id);
-	Some((id,url))
+	Some((UnicodeEmoji(c),url))
 }
 #[derive(Debug)]
 pub struct MFMString{
-	raw:String,
+	pub raw:String,
 	render:Vec<MFMElement>,
 }
 #[derive(Debug)]
@@ -352,7 +451,7 @@ impl MFMElement{
 			MFMElement::Emoji(emoji)=>{
 				let img=emoji.img.get(animate_frame).unwrap_or_else(||dummy.get(animate_frame).unwrap());
 				let img=img.max_size([f32::MAX,20f32*ctx.scale].into());
-				img.ui(ui).on_hover_text(emoji.id.as_str());
+				img.ui(ui).on_hover_text(emoji.id.id().as_str());
 			},
 			MFMElement::Scale(s,e)=>{
 				ctx.scale*=s;
@@ -363,14 +462,29 @@ impl MFMElement{
 }
 #[derive(Debug)]
 pub struct Emoji{
-	id:String,
+	id:EmojiId,
 	img:Arc<UrlImage>,
+}
+#[derive(Clone,Debug)]
+pub enum EmojiId{
+	Unicode(UnicodeEmoji),
+	Remote(String),
+	Local(String),
+}
+impl EmojiId{
+	pub fn id(&self)->Cow<String>{
+		match self{
+			EmojiId::Unicode(e) => Cow::Owned(e.0.to_string()),
+			EmojiId::Remote(id) => Cow::Borrowed(id),
+			EmojiId::Local(id) => Cow::Borrowed(id),
+		}
+	}
 }
 impl Emoji{
 	pub fn image(&self,animate_frame:u64)->Option<egui::Image<'static>>{
 		self.img.get(animate_frame)
 	}
-	pub fn id(&self)->&str{
+	pub fn id_raw(&self)->&EmojiId{
 		&self.id
 	}
 	pub fn url_image(&self)->&Arc<UrlImage>{
@@ -409,14 +523,20 @@ impl MFMString{
 		let mut render=vec![];
 		let mut emoji_indexs=vec![];
 		if let Some(emojis)=known_emojis{
-			for (k,url) in emojis{
+			for (id,url) in emojis{
 				let mut s=raw.as_str();
 				let mut offset=0;
 				loop{
-					let k=format!(":{}:",k);
+					let k=format!(":{}:",id);
 					if let Some(idx)=s.find(&k){
 						let len=k.len();
-						emoji_indexs.push((idx+offset,k,len,url.to_string()));
+						let id=format!("{}{}",&id,instance_str);
+						let id=if instance_str.is_empty(){
+							EmojiId::Local(id)
+						}else{
+							EmojiId::Remote(id)
+						};
+						emoji_indexs.push((idx+offset,id,len,url.to_string()));
 						offset=offset+idx+len;
 						s=&raw[offset..];
 					}else{
@@ -431,7 +551,7 @@ impl MFMString{
 				continue;
 			}
 			if let Some((id,url))=unicode_to_emoji(m.as_str(),&emoji_cache.local_instance){
-				emoji_indexs.push((m.start(),id,m.len(),url));
+				emoji_indexs.push((m.start(),EmojiId::Unicode(id),m.len(),url));
 				//println!("{}..{}\t{}",m.start(),m.len(),m.as_str());
 			}
 		}
@@ -444,12 +564,7 @@ impl MFMString{
 				render.push(MFMElement::Text(s.to_owned()));
 			}
 			offset=idx+skip_chars;
-			let unique_emoji_id=if id.starts_with(":")&&id.ends_with(":"){
-				format!("{}{}",&id[1..id.len()-1],instance_str)
-			}else{
-				id
-			};
-			let img=emoji_cache.load(unique_emoji_id,url.as_str()).await;
+			let img=emoji_cache.load(id,url.as_str()).await;
 			render.push(MFMElement::Emoji(img));
 		}
 		if offset<raw.len(){
