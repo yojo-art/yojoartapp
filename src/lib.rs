@@ -280,6 +280,7 @@ fn common<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+'static{
 				view_config:false,
 				auto_old_timeline:false,
 				view_old_timeline:0f32,
+				open_timeline:std::sync::Mutex::new(None),
 			})
 		}),
 	).unwrap();
@@ -311,6 +312,7 @@ struct MyApp<F>{
 	view_config:bool,
 	auto_old_timeline:bool,
 	view_old_timeline:f32,
+	open_timeline:std::sync::Mutex<Option<(Option<load_misskey::TimeLine>,Option<String>)>>,
 }
 struct ZoomMediaView{
 	original_img:Arc<data_model::UrlImage>,
@@ -414,51 +416,58 @@ impl <F> MyApp<F>{
 			ui.label(include_str!("License.txt"));
 		});
 	}
+	fn load(&mut self,tl:Option<load_misskey::TimeLine>,until_id:Option<String>){
+		self.view_old_timeline=2f32;
+		let reload=self.reload.clone();
+		if reload.max_capacity()==reload.capacity(){
+			if let Some(tl)=&tl{
+				if self.now_tl!=*tl{
+					self.notes.clear();
+				}
+				self.now_tl=tl.clone();
+			}
+			if until_id.is_some(){
+				self.notes.clear();
+			}
+			let known_notes=self.notes.clone();
+			let websocket=self.auto_update;
+			let tl=tl.unwrap_or_else(||self.now_tl.clone());
+			std::thread::spawn(move||{
+				tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
+					let _=reload.send(load_misskey::LoadSrc::TimeLine(load_misskey::TLOption{
+						until_id,
+						limit:30,
+						tl,
+						known_notes,
+						websocket,
+					})).await;
+				});
+			});
+		}
+	}
 	fn timeline(&mut self,ui:&mut egui::Ui,ctx:&egui::Context){
+		if let Some((tl,until_id))={
+			let mut lock=self.open_timeline.lock().unwrap();
+			let v=lock.take();
+			v
+		}{
+			self.load(tl,until_id);
+		}
 		ui.horizontal_wrapped(|ui|{
 			ui.heading(&self.locale.appname);
-			fn load<F>(app:&mut MyApp<F>,limit:u8,tl:load_misskey::TimeLine,until_id:Option<String>){
-				let reload=app.reload.clone();
-				if reload.max_capacity()==reload.capacity(){
-					if app.now_tl!=tl{
-						app.notes.clear();
-					}
-					if until_id.is_some(){
-						app.notes.clear();
-					}
-					app.now_tl=tl;
-					let known_notes=app.notes.clone();
-					let websocket=app.auto_update;
-					std::thread::spawn(move||{
-						tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
-							let _=reload.send(load_misskey::LoadSrc::TimeLine(load_misskey::TLOption{
-								until_id,
-								limit,
-								tl,
-								known_notes,
-								websocket,
-							})).await;
-						});
-					});
-				}
-			}
 			if ui.button("HTL").clicked(){
-				self.view_old_timeline=2f32;
-				load(self,30,load_misskey::TimeLine::Home,None);
+				self.load(Some(load_misskey::TimeLine::Home),None);
 			}
 			if ui.button("GTL").clicked(){
-				self.view_old_timeline=2f32;
-				load(self,30,load_misskey::TimeLine::Global,None);
+				self.load(Some(load_misskey::TimeLine::Global),None);
 			}
 			if ui.checkbox(&mut self.auto_update,&self.locale.websocket).changed(){
-				self.view_old_timeline=2f32;
-				load(self,30,self.now_tl,None);
+				self.load(None,None);
 			}
 			if self.view_old_timeline>=1f32&&self.view_old_timeline<2f32{
 				if let Some(n)=self.notes.first().map(|n|n.id.to_string()){
-					self.view_old_timeline=2f32;
 					self.auto_update=false;
-					load(self,30,self.now_tl,Some(n));
+					self.load(None,Some(n));
 				}
 			}
 			if ui.button(&self.locale.open_settings).clicked(){
@@ -575,18 +584,25 @@ impl <F> MyApp<F>{
 		ui.horizontal_top(|ui| {
 			//表示部分
 			//ユーザーアイコン60x60
-			if top_level{
+			let icon=if top_level{
 				let icon=self.get_image(&user.icon);
 				let icon=icon.max_size([60f32,60f32].into());
 				let icon=icon.rounding(egui::Rounding::from(30f32));
-				icon.ui(ui);
-				//右に10
-				ui.add_space(10f32);
+				icon
 			}else{
 				let icon=self.get_image(&user.icon);
 				let icon=icon.max_size([20f32,20f32].into());
 				let icon=icon.rounding(egui::Rounding::from(10f32));
-				icon.ui(ui);
+				icon
+			};
+			let icon=egui::Button::image(icon);
+			let icon=icon.fill(Color32::from_black_alpha(0));
+			if icon.ui(ui).clicked(){
+				self.open_timeline.lock().unwrap().replace((Some(load_misskey::TimeLine::User(note.user.id.clone())),None));
+			}
+			if top_level{
+				//右に10
+				ui.add_space(10f32);
 			}
 			ui.vertical(|ui|{
 				//ユーザー名
@@ -775,7 +791,11 @@ impl <F> MyApp<F>{
 					//ユーザーアイコン20x20
 					let icon=icon.max_size([20f32,20f32].into());
 					let icon=icon.rounding(egui::Rounding::from(10f32));
-					icon.ui(ui);
+					let icon=egui::Button::image(icon);
+					let icon=icon.fill(Color32::from_black_alpha(0));
+					if icon.ui(ui).clicked(){
+						self.open_timeline.lock().unwrap().replace((Some(load_misskey::TimeLine::User(note.user.id.clone())),None));
+					}
 					note.user.display_name.render(ui,true,&self.dummy,self.animate_frame);
 					ui.label(self.locale.renote.as_str());
 					//時刻と可視性

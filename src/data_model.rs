@@ -150,7 +150,7 @@ impl From<&str> for Visibility{
 }
 #[derive(Debug)]
 pub struct UserProfile{
-	id:String,//9fftrmo3sw
+	pub id:String,//9fftrmo3sw
 	pub username:String,//kozakura
 	pub display_name:MFMString,//狐桜
 	pub instance:Option<Arc<FediverseInstance>>,//misskey.kzkr.xyz
