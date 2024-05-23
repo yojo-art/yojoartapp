@@ -9,6 +9,7 @@ use tokio::sync::{mpsc::{Receiver, Sender}, Mutex};
 use crate::{data_model::{self, DelayAssets, EmojiCache, NoteFile}, ConfigFile};
 
 pub struct TLOption{
+	pub(crate) until_id:Option<String>,
 	pub(crate) limit:u8,
 	pub(crate) tl:TimeLine,
 	pub(crate) known_notes:Vec<Arc<data_model::Note>>,
@@ -80,10 +81,10 @@ pub async fn load_misskey(
 					}else{
 						None
 					},&mut state).await);
-					let limit=(limit.limit,limit.tl,limit.known_notes);
-					let htl=read_timeline(&client,config.instance.as_ref().unwrap(),config.token.as_ref().unwrap().clone(),limit.clone()).await;
+					let tl=limit.tl;
+					let htl=read_timeline(&client,config.instance.as_ref().unwrap(),config.token.as_ref().unwrap().clone(),limit).await;
 					if let Err(e)=htl{
-						let mes=format!("get api/notes/{} error {}",limit.1.to_string(),e);
+						let mes=format!("get api/notes/{} error {}",tl.to_string(),e);
 						if let Err(e)=note_ui0.send(Arc::new(data_model::Note::system_message(mes,"").await)).await{
 							eprintln!("{:?}",e);
 						}
@@ -653,6 +654,9 @@ async fn meta(client:&Client,local_instance:&str)->Result<ApiMeta,String>{
 }
 #[derive(Serialize,Deserialize,Debug)]
 struct TimelineRequestJson{
+    #[serde(skip_serializing_if = "Option::is_none")]
+	#[serde(rename = "untilId")]
+	until_id:Option<String>,
 	#[serde(rename = "allowPartial")]
 	allow_partial:bool,
 	#[serde(rename = "withRenotes")]
@@ -673,15 +677,16 @@ impl ToString for TimeLine{
 		}.to_owned()
 	}
 }
-async fn read_timeline(client:&Client,local_instance:&str,token:String,(limit,tl,knwon):(u8,TimeLine,Vec<Arc<data_model::Note>>))->Result<Vec<RawNote>,String>{
-	let req_builder=client.post(format!("{}/api/notes/{}",local_instance,tl.to_string()));
+async fn read_timeline(client:&Client,local_instance:&str,token:String,opt:TLOption)->Result<Vec<RawNote>,String>{
+	let req_builder=client.post(format!("{}/api/notes/{}",local_instance,opt.tl.to_string()));
 	//global-timeline
 	//timeline
 	let req_builder=req_builder.header(reqwest::header::CONTENT_TYPE,"application/json");
 	let req_body=TimelineRequestJson{
-		allow_partial: true,
+		until_id:opt.until_id,
+		allow_partial: false,
 		with_renotes: true,
-		limit,
+		limit:opt.limit,
 		i:token,
 	};
 	let req_body=serde_json::to_string(&req_body).map_err(|e|e.to_string())?;
@@ -698,12 +703,12 @@ async fn read_timeline(client:&Client,local_instance:&str,token:String,(limit,tl
 	let htl=serde_json::from_slice(&htl);
 	let htl: Vec<RawNote>=htl.map_err(|e|e.to_string())?;
 	let mut known_notes_map=HashMap::new();
-	for note in knwon{
-		known_notes_map.insert(note.id.as_str().to_owned(),note);
+	for note in &opt.known_notes{
+		known_notes_map.insert(&note.id,note);
 	}
 	let mut htl_update=vec![];
 	for note in htl.into_iter().rev(){
-		if let Some(hit)=known_notes_map.get(note.id.as_str()){
+		if let Some(hit)=known_notes_map.get(&note.id){
 			let hash=reactions_hash(&note);
 			if hit.reactions.hash==hash{
 				continue;
