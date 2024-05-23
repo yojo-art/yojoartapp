@@ -76,12 +76,17 @@ pub async fn load_misskey(
 		while let Some(limit) = reload_event.recv().await{
 			match limit{
 				LoadSrc::TimeLine(limit) => {
+					let tl=limit.tl.clone();
 					eprintln!("read_websocket {:?}",read_websocket(config.clone(),raw_note_sender.clone(),if limit.websocket{
-						Some(limit.tl.into())
+						if let TimeLine::User(_)=&tl{
+							//ユーザーTLにはWebSocketが無い
+							None
+						}else{
+							Some(tl.clone().into())
+						}
 					}else{
 						None
 					},&mut state).await);
-					let tl=limit.tl;
 					let htl=read_timeline(&client,config.instance.as_ref().unwrap(),config.token.as_ref().unwrap().clone(),limit).await;
 					if let Err(e)=htl{
 						let mes=format!("get api/notes/{} error {}",tl.to_string(),e);
@@ -350,6 +355,7 @@ impl From<TimeLine> for MisskeyChannel{
 		match value {
 			TimeLine::Global => Self::GlobalTimeline,
 			TimeLine::Home => Self::HomeTimeline,
+			TimeLine::User(_)=>unimplemented!(),
 		}
 	}
 }
@@ -652,46 +658,90 @@ async fn meta(client:&Client,local_instance:&str)->Result<ApiMeta,String>{
 	let meta=meta.bytes().await.map_err(|e|e.to_string())?;
 	serde_json::from_slice(&meta).map_err(|e|e.to_string())
 }
-#[derive(Serialize,Deserialize,Debug)]
-struct TimelineRequestJson{
-    #[serde(skip_serializing_if = "Option::is_none")]
-	#[serde(rename = "untilId")]
-	until_id:Option<String>,
-	#[serde(rename = "allowPartial")]
-	allow_partial:bool,
-	#[serde(rename = "withRenotes")]
-	with_renotes:bool,
-	limit:u8,
-	i:String,
-}
-#[derive(PartialEq,Eq,Copy,Clone,Debug)]
+#[derive(PartialEq,Eq,Clone,Debug)]
 pub enum TimeLine{
 	Global,
 	Home,
+	User(String),
 }
 impl ToString for TimeLine{
 	fn to_string(&self) -> String {
 		match self {
 			TimeLine::Global => "global-timeline",
 			TimeLine::Home => "timeline",
+			TimeLine::User(_) => "user",
 		}.to_owned()
 	}
 }
 async fn read_timeline(client:&Client,local_instance:&str,token:String,opt:TLOption)->Result<Vec<RawNote>,String>{
-	let req_builder=client.post(format!("{}/api/notes/{}",local_instance,opt.tl.to_string()));
-	//global-timeline
-	//timeline
-	let req_builder=req_builder.header(reqwest::header::CONTENT_TYPE,"application/json");
-	let req_body=TimelineRequestJson{
-		until_id:opt.until_id,
-		allow_partial: false,
-		with_renotes: true,
-		limit:opt.limit,
-		i:token,
+	let req_builder=match opt.tl {
+		TimeLine::Global|TimeLine::Home => {
+			let req_builder=client.post(format!("{}/api/notes/{}",local_instance,opt.tl.to_string()));
+			let req_builder=req_builder.header(reqwest::header::CONTENT_TYPE,"application/json");
+			#[derive(Serialize,Deserialize,Debug)]
+			struct TimelineRequestJson{
+				#[serde(skip_serializing_if = "Option::is_none")]
+				#[serde(rename = "untilId")]
+				until_id:Option<String>,
+				#[serde(rename = "allowPartial")]
+				allow_partial:bool,
+				#[serde(rename = "withRenotes")]
+				with_renotes:bool,
+				limit:u8,
+				i:String,
+			}
+			let req_body=TimelineRequestJson{
+				until_id:opt.until_id,
+				allow_partial: false,
+				with_renotes: true,
+				limit:opt.limit,
+				i:token,
+			};
+			let req_body=serde_json::to_string(&req_body).map_err(|e|e.to_string())?;
+			let req_builder=req_builder.header(reqwest::header::CONTENT_LENGTH,req_body.len());
+			let req_builder=req_builder.body(req_body);
+			req_builder
+		},
+		TimeLine::User(id) => {
+			let req_builder=client.post(format!("{}/api/users/notes",local_instance));
+			let req_builder=req_builder.header(reqwest::header::CONTENT_TYPE,"application/json");
+			#[derive(Serialize,Deserialize,Debug)]
+			struct TimelineRequestJson{
+				#[serde(skip_serializing_if = "Option::is_none")]
+				#[serde(rename = "untilId")]
+				until_id:Option<String>,
+				#[serde(rename = "allowPartial")]
+				allow_partial:bool,
+				#[serde(rename = "withRenotes")]
+				with_renotes:bool,
+				#[serde(rename = "withReplies")]
+				with_replies:bool,
+				#[serde(rename = "withChannelNotes")]
+				with_channel_notes:bool,
+				#[serde(rename = "withFiles")]
+				with_files:bool,
+				#[serde(rename = "userId")]
+				user_id:String,
+				limit:u8,
+				i:String,
+			}
+			let req_body=TimelineRequestJson{
+				until_id:opt.until_id,
+				allow_partial: false,
+				with_renotes: true,
+				limit:opt.limit,
+				i:token,
+				with_replies: true,
+				with_channel_notes: true,
+				with_files: false,
+				user_id: id,
+			};
+			let req_body=serde_json::to_string(&req_body).map_err(|e|e.to_string())?;
+			let req_builder=req_builder.header(reqwest::header::CONTENT_LENGTH,req_body.len());
+			let req_builder=req_builder.body(req_body);
+			req_builder
+		},
 	};
-	let req_body=serde_json::to_string(&req_body).map_err(|e|e.to_string())?;
-	let req_builder=req_builder.header(reqwest::header::CONTENT_LENGTH,req_body.len());
-	let req_builder=req_builder.body(req_body);
 	let req_builder=req_builder.timeout(std::time::Duration::from_secs(5));
 	let htl=req_builder.send().await;
 	let htl=htl.map_err(|e|e.to_string())?;
