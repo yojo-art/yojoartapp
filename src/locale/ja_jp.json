@@ -1,4 +1,6 @@
 {
+	"auto_old_timeline":"過去TL自動切り替え",
+	"load_old_timeline":"過去投稿を読み込む",
 	"open_settings":"設定を開く",
 	"close_settings":"設定を閉じる",
 	"nsfw_always_show":"NSFWを常に表示",

@@ -39,6 +39,8 @@ pub struct LocaleFile{
 	nsfw_always_show:String,
 	open_settings:String,
 	close_settings:String,
+	load_old_timeline:String,
+	auto_old_timeline:String,
 }
 fn load_config()->(String,Arc<ConfigFile>){
 	let config_path=match std::env::var("YAC_CONFIG_PATH"){
@@ -276,6 +278,8 @@ fn common<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+'static{
 				view_media:std::sync::Mutex::new(None),
 				view_license:false,
 				view_config:false,
+				auto_old_timeline:false,
+				view_old_timeline:0f32,
 			})
 		}),
 	).unwrap();
@@ -305,6 +309,8 @@ struct MyApp<F>{
 	view_media:std::sync::Mutex<Option<ZoomMediaView>>,
 	view_license:bool,
 	view_config:bool,
+	auto_old_timeline:bool,
+	view_old_timeline:f32,
 }
 struct ZoomMediaView{
 	original_img:Arc<data_model::UrlImage>,
@@ -365,6 +371,7 @@ impl <F> MyApp<F>{
 			ctx.request_repaint();
 			return;
 		}
+		ui.checkbox(&mut self.auto_old_timeline,&self.locale.auto_old_timeline);
 	}
 	fn media(&self,ui:&mut egui::Ui,lock:&mut Option<ZoomMediaView>){
 		fn view<F>(ui:&mut egui::Ui,img:egui::Image<'static>,close:F)where F:FnOnce()->(){
@@ -410,10 +417,13 @@ impl <F> MyApp<F>{
 	fn timeline(&mut self,ui:&mut egui::Ui,ctx:&egui::Context){
 		ui.horizontal_wrapped(|ui|{
 			ui.heading(&self.locale.appname);
-			fn load<F>(app:&mut MyApp<F>,limit:u8,tl:load_misskey::TimeLine){
+			fn load<F>(app:&mut MyApp<F>,limit:u8,tl:load_misskey::TimeLine,until_id:Option<String>){
 				let reload=app.reload.clone();
 				if reload.max_capacity()==reload.capacity(){
 					if app.now_tl!=tl{
+						app.notes.clear();
+					}
+					if until_id.is_some(){
 						app.notes.clear();
 					}
 					app.now_tl=tl;
@@ -422,6 +432,7 @@ impl <F> MyApp<F>{
 					std::thread::spawn(move||{
 						tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
 							let _=reload.send(load_misskey::LoadSrc::TimeLine(load_misskey::TLOption{
+								until_id,
 								limit,
 								tl,
 								known_notes,
@@ -432,13 +443,23 @@ impl <F> MyApp<F>{
 				}
 			}
 			if ui.button("HTL").clicked(){
-				load(self,30,load_misskey::TimeLine::Home);
+				self.view_old_timeline=2f32;
+				load(self,30,load_misskey::TimeLine::Home,None);
 			}
 			if ui.button("GTL").clicked(){
-				load(self,30,load_misskey::TimeLine::Global);
+				self.view_old_timeline=2f32;
+				load(self,30,load_misskey::TimeLine::Global,None);
 			}
 			if ui.checkbox(&mut self.auto_update,&self.locale.websocket).changed(){
-				load(self,30,self.now_tl);
+				self.view_old_timeline=2f32;
+				load(self,30,self.now_tl,None);
+			}
+			if self.view_old_timeline>=1f32&&self.view_old_timeline<2f32{
+				if let Some(n)=self.notes.first().map(|n|n.id.to_string()){
+					self.view_old_timeline=2f32;
+					self.auto_update=false;
+					load(self,30,self.now_tl,Some(n));
+				}
 			}
 			if ui.button(&self.locale.open_settings).clicked(){
 				self.view_config=true;
@@ -491,6 +512,7 @@ impl <F> MyApp<F>{
 				self.notes.insert(rm,n);
 			}else{
 				self.notes.push(n);
+				self.view_old_timeline=0f32;
 			}
 			if self.notes.len()>30{
 				self.notes.remove(0);
@@ -503,14 +525,32 @@ impl <F> MyApp<F>{
 			(self.button_handle)(&mut self.show_ime);
 		}
 */
-		ScrollArea::vertical().show(ui,|ui|{
+		let scroll=ScrollArea::vertical().show(ui,|ui|{
 			let width=ui.available_width();
 			for note in self.notes.iter().rev(){
 				ui.allocate_ui([width,0f32].into(),|ui|{
 					self.note_ui(ui,note);
 				});
 			}
+			if !self.auto_old_timeline{
+				if egui::Button::new(&self.locale.load_old_timeline).ui(ui).clicked(){
+					self.view_old_timeline=1f32;
+				};
+			}else{
+				egui::ProgressBar::new(self.view_old_timeline).ui(ui);
+			}
 		});
+		if self.auto_old_timeline{
+			if self.view_old_timeline>=2f32{
+				//now loading
+			}else if scroll.state.offset.y==0f32.max(scroll.content_size.y-scroll.inner_rect.height()){
+				if self.view_old_timeline<1f32{
+					self.view_old_timeline+=0.01f32;
+				}
+			}else if self.view_old_timeline>0f32{
+				self.view_old_timeline-=0.01f32;
+			}
+		}
 	}
 	fn time_label(&self,ui:&mut egui::Ui,note:&data_model::Note){
 		let label=if note.visibility!=data_model::Visibility::Public{
