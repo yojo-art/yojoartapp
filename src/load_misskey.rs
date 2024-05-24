@@ -658,11 +658,16 @@ async fn meta(client:&Client,local_instance:&str)->Result<ApiMeta,String>{
 	let meta=meta.bytes().await.map_err(|e|e.to_string())?;
 	serde_json::from_slice(&meta).map_err(|e|e.to_string())
 }
-#[derive(PartialEq,Eq,Clone,Debug)]
+#[derive(PartialEq,Eq,Clone,Debug,Serialize,Deserialize)]
 pub enum TimeLine{
 	Global,
 	Home,
 	User(String),
+}
+impl Default for TimeLine{
+	fn default() -> Self {
+		Self::Home
+	}
 }
 impl ToString for TimeLine{
 	fn to_string(&self) -> String {

@@ -26,6 +26,8 @@ pub fn android_main(app: AndroidApp){
 	if let Some(internal_data_path)=app.internal_data_path(){
 		let value=internal_data_path.clone().join("config.json");
 		std::env::set_var("YAC_CONFIG_PATH", value);
+		let value=internal_data_path.clone().join("state.json");
+		std::env::set_var("YAC_STATE_PATH", value);
 	}
 	let options = eframe::NativeOptions {
 		event_loop_builder: Some(Box::new(move |builder| {

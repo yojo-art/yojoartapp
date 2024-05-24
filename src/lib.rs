@@ -20,6 +20,44 @@ pub fn open(){
 	};
 	common(options,|_|{});
 }
+
+#[derive(Debug,Default,Serialize,Deserialize)]
+pub struct StateFile{
+	timeline: load_misskey::TimeLine,
+	until_id:Option<String>,
+	nsfw_always_show:bool,
+	auto_old_timeline:bool,
+}
+impl StateFile{
+	fn file()->String{
+		match std::env::var("YAC_STATE_PATH"){
+			Ok(path)=>{
+				if path.is_empty(){
+					"state.json".to_owned()
+				}else{
+					path
+				}
+			},
+			Err(_)=>"state.json".to_owned()
+		}
+	}
+	pub fn write(&self){
+		if let Ok(writer)=std::fs::File::create(Self::file()){
+			if let Err(e)=serde_json::to_writer(writer,&self){
+				eprintln!("{:?}",e);
+			}
+		}
+	}
+	pub fn load()->Option<Self>{
+		if let Ok(writer)=std::fs::File::open(Self::file()){
+			match serde_json::from_reader(writer){
+				Ok(d)=>return Some(d),
+				Err(e)=>eprintln!("{:?}",e)
+			}
+		}
+		None
+	}
+}
 #[derive(Debug,Serialize,Deserialize)]
 pub struct ConfigFile{
 	token: Option<String>,
@@ -253,6 +291,8 @@ fn common<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+'static{
 				let rt=tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
 				rt.block_on(delay_assets(assets_recv,ctx,client0,config0));
 			});
+			let state=StateFile::load().unwrap_or_default();
+			let open_timeline=std::sync::Mutex::new(Some((Some(state.timeline.clone()),state.until_id.clone())));
 			Box::new(MyApp{
 				config,
 				locale,
@@ -272,15 +312,13 @@ fn common<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+'static{
 				reload,
 				client,
 				themify,
-				now_tl:load_misskey::TimeLine::Home,
 				auto_update:false,
-				nsfw_always_show:false,
 				view_media:std::sync::Mutex::new(None),
 				view_license:false,
 				view_config:false,
-				auto_old_timeline:false,
 				view_old_timeline:0f32,
-				open_timeline:std::sync::Mutex::new(None),
+				open_timeline,
+				state,
 			})
 		}),
 	).unwrap();
@@ -305,14 +343,12 @@ struct MyApp<F>{
 	client: Client,
 	themify:egui::FontFamily,
 	auto_update:bool,
-	now_tl:load_misskey::TimeLine,
-	nsfw_always_show:bool,
 	view_media:std::sync::Mutex<Option<ZoomMediaView>>,
 	view_license:bool,
 	view_config:bool,
-	auto_old_timeline:bool,
 	view_old_timeline:f32,
 	open_timeline:std::sync::Mutex<Option<(Option<load_misskey::TimeLine>,Option<String>)>>,
+	state:StateFile,
 }
 struct ZoomMediaView{
 	original_img:Arc<data_model::UrlImage>,
@@ -367,13 +403,17 @@ impl <F> MyApp<F>{
 			ctx.request_repaint();
 			return;
 		}
-		ui.checkbox(&mut self.nsfw_always_show,&self.locale.nsfw_always_show);
+		if ui.checkbox(&mut self.state.nsfw_always_show,&self.locale.nsfw_always_show).changed(){
+			self.state.write();
+		}
 		if ui.button(&self.locale.show_license).clicked(){
 			self.view_license=true;
 			ctx.request_repaint();
 			return;
 		}
-		ui.checkbox(&mut self.auto_old_timeline,&self.locale.auto_old_timeline);
+		if ui.checkbox(&mut self.state.auto_old_timeline,&self.locale.auto_old_timeline).changed(){
+			self.state.write();
+		}
 	}
 	fn media(&self,ui:&mut egui::Ui,lock:&mut Option<ZoomMediaView>){
 		fn view<F>(ui:&mut egui::Ui,img:egui::Image<'static>,close:F)where F:FnOnce()->(){
@@ -420,18 +460,23 @@ impl <F> MyApp<F>{
 		self.view_old_timeline=2f32;
 		let reload=self.reload.clone();
 		if reload.max_capacity()==reload.capacity(){
+			self.state.until_id=until_id.clone();
 			if let Some(tl)=&tl{
-				if self.now_tl!=*tl{
+				if self.state.timeline!=*tl{
+					self.state.timeline=tl.clone();
 					self.notes.clear();
+					if until_id.is_none(){
+						self.state.write();
+					}
 				}
-				self.now_tl=tl.clone();
 			}
 			if until_id.is_some(){
 				self.notes.clear();
+				self.state.write();
 			}
 			let known_notes=self.notes.clone();
 			let websocket=self.auto_update;
-			let tl=tl.unwrap_or_else(||self.now_tl.clone());
+			let tl=tl.unwrap_or_else(||self.state.timeline.clone());
 			std::thread::spawn(move||{
 				tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
 					let _=reload.send(load_misskey::LoadSrc::TimeLine(load_misskey::TLOption{
@@ -541,7 +586,7 @@ impl <F> MyApp<F>{
 					self.note_ui(ui,note);
 				});
 			}
-			if !self.auto_old_timeline{
+			if !self.state.auto_old_timeline{
 				if egui::Button::new(&self.locale.load_old_timeline).ui(ui).clicked(){
 					self.view_old_timeline=1f32;
 				};
@@ -549,7 +594,7 @@ impl <F> MyApp<F>{
 				egui::ProgressBar::new(self.view_old_timeline).ui(ui);
 			}
 		});
-		if self.auto_old_timeline{
+		if self.state.auto_old_timeline{
 			if self.view_old_timeline>=2f32{
 				//now loading
 			}else if scroll.state.offset.y==0f32.max(scroll.content_size.y-scroll.inner_rect.height()){
@@ -670,7 +715,7 @@ impl <F> MyApp<F>{
 					let width=ui.available_width();
 					for file in &note.files{
 						let show_sensitive=file.show_sensitive.load(std::sync::atomic::Ordering::Relaxed);
-						let show_sensitive=!file.is_sensitive||show_sensitive||self.nsfw_always_show;
+						let show_sensitive=!file.is_sensitive||show_sensitive||self.state.nsfw_always_show;
 						let img_opt=if !show_sensitive{
 							None
 						}else{

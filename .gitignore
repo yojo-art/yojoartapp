@@ -2,4 +2,4 @@
 /cache
 /Cargo.lock
 /config.json
-
+/state.json
