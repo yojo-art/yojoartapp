@@ -2,7 +2,8 @@ use std::{borrow::Cow, collections::HashMap, fmt::Debug, hash::{Hash, Hasher}, i
 
 use egui::Color32;
 use image::DynamicImage;
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::RwLock};
+use serde::{Deserialize, Serialize};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{Mutex, RwLock}};
 
 use crate::{load_misskey::{RawFile, RawInstance, RawNote, RawUser}, ConfigFile};
 
@@ -423,6 +424,54 @@ enum MFMElement{
 	Text(String),
 	Emoji(Emoji),
 	Scale(f32,Box<MFMElement>),
+	Url(String,Arc<Mutex<Option<Summaly>>>),
+}
+#[derive(Debug)]
+pub struct Summaly{
+	pub url:String,
+	pub title:Option<String>,
+	pub sitename:Option<String>,
+	pub description:Option<String>,
+	pub icon:Option<Arc<UrlImage>>,
+	pub thumbnail:Option<Arc<UrlImage>>,
+}
+impl Summaly{
+	pub async fn load(client:&reqwest::Client,summaly:&str,url:&str)->Option<Self>{
+		let url=format!("{}?url={}",summaly,urlencoding::encode(url));
+		let build=client.get(&url);
+		let build=build.timeout(std::time::Duration::from_secs(5));
+		let build=build.header(reqwest::header::USER_AGENT,"yojo-art-app/0.1.0");
+		let res=build.send().await.map_err(|e|eprintln!("SummalyRequestSend {:?} {}",e,url)).ok()?;
+		if res.status().is_success(){
+			//ok
+		}else{
+			eprintln!("SummalyError {} {}",res.status(),url);
+		}
+		let bytes=res.bytes().await.map_err(|e|eprintln!("SummalyBytes {:?} {}",e,url)).ok()?;
+		let raw=serde_json::from_slice::<SummalyRaw>(&bytes).map_err(|e|eprintln!("SummalyParse {:?} {}",e,url)).ok()?;
+		Some(raw.into())
+	}
+}
+#[derive(Serialize,Deserialize,Debug)]
+struct SummalyRaw{
+	url:String,
+	title:Option<String>,
+	sitename:Option<String>,
+	description:Option<String>,
+	icon:Option<String>,
+	thumbnail:Option<String>,
+}
+impl From<SummalyRaw> for Summaly{
+	fn from(raw:SummalyRaw) -> Self {
+		Self{
+			url: raw.url,
+			title: raw.title,
+			sitename: raw.sitename,
+			description: raw.description,
+			icon: raw.icon.map(|v|Arc::new(v.into())),
+			thumbnail: raw.thumbnail.map(|v|Arc::new(v.into()))
+		}
+	}
 }
 struct MFMRenderContext{
 	scale:f32,
@@ -456,6 +505,21 @@ impl MFMElement{
 			MFMElement::Scale(s,e)=>{
 				ctx.scale*=s;
 				e.render(ui,strong,dummy,ctx,animate_frame);
+			},
+			MFMElement::Url(url,summaly) => {
+				let lock=summaly.blocking_lock();
+				let hint_url=lock.as_ref().map(|v|&v.url).unwrap_or(url);
+				let s=format!("{}",url);
+				let text=egui::RichText::from(s);
+				let text=if strong{
+					text.strong()
+				}else{
+					text
+				};
+				let text=text.size(12f32*ctx.scale);
+				if egui::Link::new(text).ui(ui).on_hover_text(hint_url).clicked(){
+					ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+				}
 			},
 		}
 	}
@@ -545,6 +609,7 @@ impl MFMString{
 				}
 			}
 		}
+		let url_match=regex::Regex::new("https?://[0-9A-Za-z_\\./\\?\\&=%#\\-\\+\\!\\:\\,]+").unwrap();
 		let emoji_match=regex::Regex::new(r#"\p{Emoji}"#).unwrap();
 		for m in emoji_match.find_iter(&raw){
 			if m.len()==1{
@@ -557,11 +622,25 @@ impl MFMString{
 		}
 		//utf絵文字の処理
 		emoji_indexs.sort_by(|(a,_,_,_),(b,_,_,_)|a.partial_cmp(b).unwrap());
+		fn push_str(url_match:&regex::Regex,render:&mut Vec<MFMElement>,s:&str){
+			let mut offset=0;
+			for m in url_match.find_iter(s){
+				if m.start()!=offset{
+					render.push(MFMElement::Text(s[offset..m.start()].to_owned()));
+				}
+				render.push(MFMElement::Url(m.as_str().to_owned(),Arc::new(Mutex::new(None))));
+				offset=m.end();
+			}
+			let s=&s[offset..];
+			if !s.is_empty(){
+				render.push(MFMElement::Text(s.to_owned()));
+			}
+		}
 		let mut offset=0;
 		for (idx,id,skip_chars,url) in emoji_indexs{
 			if offset<idx{
 				let s=&raw[offset..idx];
-				render.push(MFMElement::Text(s.to_owned()));
+				push_str(&url_match,&mut render,s);
 			}
 			offset=idx+skip_chars;
 			let img=emoji_cache.load(id,url.as_str()).await;
@@ -569,7 +648,7 @@ impl MFMString{
 		}
 		if offset<raw.len(){
 			let s=&raw[offset..];
-			render.push(MFMElement::Text(s.to_owned()));
+			push_str(&url_match,&mut render,s);
 		}
 		//println!("{:?}",render);
 		Self{
@@ -582,6 +661,16 @@ impl MFMString{
 			match s{
 				MFMElement::Emoji(img)=>{
 					Some(&img.img)
+				},
+				_=>None
+			}
+		}).filter(|s|s.is_some()).map(|s|s.unwrap())
+	}
+	pub fn urls(&self)->impl Iterator<Item=(&String,&Arc<Mutex<Option<Summaly>>>)>{
+		self.render.iter().map(|s|{
+			match s{
+				MFMElement::Url(s,r)=>{
+					Some((s,r))
 				},
 				_=>None
 			}

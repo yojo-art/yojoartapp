@@ -2,7 +2,7 @@
 
 mod data_model;
 mod load_misskey;
-use std::{io::{Read, Write}, sync::Arc};
+use std::{borrow::{Borrow, Cow}, io::{Read, Write}, sync::Arc};
 
 use eframe::{egui, NativeOptions};
 
@@ -123,6 +123,7 @@ async fn delay_assets(mut recv:Receiver<data_model::DelayAssets>,ctx:egui::Conte
 			let mut job_buf=Vec::with_capacity(4);
 			let mut job_buf2=Vec::with_capacity(4);
 			let mut job_buf_emojis=Vec::with_capacity(32);
+			let mut job_buf_urls=Vec::new();
 			if let Some(instance)=note.user.instance.clone(){
 				if !instance.icon.loaded(){
 					let client=client.clone();
@@ -161,6 +162,34 @@ async fn delay_assets(mut recv:Receiver<data_model::DelayAssets>,ctx:egui::Conte
 					}
 				}
 			}
+			for (url,summaly) in note.text.urls(){
+				let summaly_server="https://summaly.xn--vusz0j.art/";
+				let summaly=summaly.clone();
+				let url=url.clone();
+				job_buf_urls.push(async move{
+					if let Some(res)=data_model::Summaly::load(&client,&summaly_server,&url).await{
+						let mut lock=summaly.lock().await;
+						let thumbnail=res.thumbnail.as_ref().cloned();
+						let icon=res.icon.as_ref().cloned();
+						lock.replace(res);
+						drop(lock);
+						futures::join!(
+							async{
+								if let Some(thumbnail)=thumbnail{
+									thumbnail.load(&client).await;
+									thumbnail.load_gpu(&ctx,&config).await;
+								}
+							},
+							async{
+								if let Some(icon)=icon{
+									icon.load(&client).await;
+									icon.load_gpu(&ctx,&config).await;
+								}
+							},
+						);
+					}
+				});
+			}
 			if !note.user.icon.loaded(){
 				let client=client.clone();
 				let ctx=ctx.clone();
@@ -174,6 +203,7 @@ async fn delay_assets(mut recv:Receiver<data_model::DelayAssets>,ctx:egui::Conte
 				futures::future::join_all(job_buf.drain(..)),
 				futures::future::join_all(job_buf2.drain(..)),
 				futures::future::join_all(job_buf_emojis.drain(..)),
+				futures::future::join_all(job_buf_urls.drain(..)),
 			);
 		}
 		for a in note_buf.drain(..){
@@ -790,6 +820,44 @@ impl <F> MyApp<F>{
 							let img=self.dummy.get(self.animate_frame).unwrap().max_width(width);
 							img.ui(ui);
 						}
+					}
+					for (url,summaly) in note.text.urls(){
+						let mut sub_ui=ui.child_ui_with_id_source(ui.available_rect_before_wrap(),egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),url);
+						let sub_ui=&mut sub_ui;
+						let lock=summaly.blocking_lock();
+						let mut title="error";
+						let mut description="";
+						let mut sitename="error";
+						let mut favicon=None;
+						let mut thumbnail=None;
+						let aw=ui.available_width();
+						if let Some(a)=lock.as_ref(){
+							title=a.title.as_ref().as_ref().map(|s|s.as_str()).unwrap_or(url.as_str());
+							description=a.description.as_ref().map(|s|{
+								let len=s.char_indices().nth(50).map(|(v,_)|v).unwrap_or(s.len());
+								&s[..len]
+							}).unwrap_or("");
+							sitename=a.sitename.as_ref().map(|s|s.as_str()).unwrap_or(url.as_str());
+							favicon=a.icon.as_ref();
+							thumbnail=a.thumbnail.as_ref();
+						}
+						if let Some(thumbnail)=thumbnail{
+							let size=aw*0.25f32;
+							self.get_image(&thumbnail).max_size([size,size].into()).ui(sub_ui);
+						}
+						sub_ui.vertical(|sub_ui|{
+							sub_ui.strong(title);
+							sub_ui.label(description);
+							sub_ui.horizontal_wrapped(|sub_ui|{
+								if let Some(favicon)=favicon{
+									self.get_image(&favicon).max_size([10f32,10f32].into()).ui(sub_ui);
+								}
+								sub_ui.label(sitename);
+							});
+						});
+						let mut size=sub_ui.min_size();
+						size.x=ui.available_width();
+						egui::Button::new("").min_size(size).fill(Color32::from_black_alpha(0)).stroke(egui::Stroke::new(1f32,egui::Color32::from_gray(200))).ui(ui);
 					}
 					//引用
 					if let Some(quote)=quote{
