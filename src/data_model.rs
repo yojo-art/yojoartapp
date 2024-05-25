@@ -609,7 +609,7 @@ impl MFMString{
 				}
 			}
 		}
-		let url_match=regex::Regex::new("https?://[0-9A-Za-z_\\./\\?\\&=%#\\-\\+\\!\\:\\,]+").unwrap();
+		let url_match=regex::Regex::new("https?://[0-9A-Za-z_\\./\\?\\&=%#\\-\\+\\!\\:\\,@]+").unwrap();
 		let emoji_match=regex::Regex::new(r#"\p{Emoji}"#).unwrap();
 		for m in emoji_match.find_iter(&raw){
 			if m.len()==1{
