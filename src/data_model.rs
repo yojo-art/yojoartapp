@@ -206,7 +206,7 @@ pub enum DelayAssets{
 pub struct UnicodeEmoji(u32);
 impl UnicodeEmoji{
 	pub fn load_all()->Vec<UnicodeEmoji>{
-		let gz=include_bytes!("unicodeemoji.utf32.gz");
+		let gz=include_bytes!("include/unicodeemoji.utf32.gz");
 		let mut gz=flate2::read::GzDecoder::new(std::io::Cursor::new(gz));
 		let mut res=vec![];
 		let mut buf=[0u8;4];
@@ -878,7 +878,7 @@ impl UrlImage{
 		self.loaded.load(std::sync::atomic::Ordering::Relaxed)
 	}
 	pub fn dummy()->Self{
-		let img=vec![(0,image::load_from_memory(include_bytes!("dummy.png")).unwrap())];
+		let img=vec![(0,image::load_from_memory(include_bytes!("include/dummy.png")).unwrap())];
 		let img=RwLock::new(img.into());
 		Self{
 			url:DUMMY_PNG.to_owned(),
