@@ -80,6 +80,7 @@ pub struct LocaleFile{
 	auto_old_timeline:String,
 	add_reaction:String,
 	reload:String,
+	open_in_browser:String,
 }
 fn load_config()->(String,Arc<ConfigFile>){
 	let config_path=match std::env::var("YAC_CONFIG_PATH"){
