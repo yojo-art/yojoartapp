@@ -79,6 +79,8 @@ pub struct LocaleFile{
 	close_settings:String,
 	load_old_timeline:String,
 	auto_old_timeline:String,
+	add_reaction:String,
+	reload:String,
 }
 fn load_config()->(String,Arc<ConfigFile>){
 	let config_path=match std::env::var("YAC_CONFIG_PATH"){
@@ -919,14 +921,19 @@ impl <F> MyApp<F>{
 		}else{
 			self.normal_note(ui,note,None,true);
 		}
-		if ui.button("Reaction").clicked(){
-			let mut lock=self.reaction_picker.lock().unwrap();
-			if lock.as_ref().map(|id|id==&note.id).unwrap_or_default(){
-				*lock=None;
-			}else{
-				*lock=Some(note.id.clone());
+		ui.horizontal_wrapped(|ui|{
+			if ui.button(&self.locale.add_reaction).clicked(){
+				let mut lock=self.reaction_picker.lock().unwrap();
+				if lock.as_ref().map(|id|id==&note.id).unwrap_or_default(){
+					*lock=None;
+				}else{
+					*lock=Some(note.id.clone());
+				}
 			}
-		}
+			if ui.button(&self.locale.reload).clicked(){
+				let _=self.reload.blocking_send(load_misskey::LoadSrc::Note(note.id.clone()));
+			}
+		});
 		if let Some(id)=self.reaction_picker.lock().unwrap().as_ref(){
 			if id==&note.id{
 				if let Some(emojis)=&self.emojis{

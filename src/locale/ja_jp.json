@@ -1,4 +1,6 @@
 {
+	"reload":"再読込",
+	"add_reaction":"リアクション",
 	"auto_old_timeline":"過去TL自動切り替え",
 	"load_old_timeline":"過去投稿を読み込む",
 	"open_settings":"設定を開く",
