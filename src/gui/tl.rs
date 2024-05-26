@@ -249,32 +249,33 @@ impl <F> MainUI<F>{
 				});
 				//インスタンス情報
 				if let Some(instance)=user.instance.as_ref(){
-					ui.horizontal(|ui|{
-						let icon=self.get_image(&instance.icon);
-						let icon=icon.max_size([15f32,15f32].into());
-						icon.ui(ui);
-						let mut ui=ui.child_ui(ui.available_rect_before_wrap(),egui::Layout::default());
-						let mut job = egui::text::LayoutJob::single_section(
-							instance.display_name().to_owned(),
-							egui::TextFormat {
-								color:Color32::from_gray(255),
-								background:instance.theme_color(),
-								font_id:egui::FontId{
-									size: 10f32,
-									..Default::default()
-								},
+					let icon=self.get_image(&instance.icon);
+					let icon=icon.max_size([15f32,15f32].into());
+					let mut job = egui::text::LayoutJob::single_section(
+						instance.display_name().to_owned(),
+						egui::TextFormat {
+							color:Color32::from_gray(255),
+							background:instance.theme_color(),
+							font_id:egui::FontId{
+								size: 10f32,
 								..Default::default()
 							},
-						);
-						job.wrap = egui::text::TextWrapping {
-							max_rows:1,
-							break_anywhere: true,
-							overflow_character: Some('…'),
 							..Default::default()
-						};
-						ui.label(job);
-						//Label::new(egui::RichText::new(instance.display_name()).color(Color32::from_gray(255)).background_color(instance.theme_color())).ui(ui);
-					});
+						},
+					);
+					job.wrap = egui::text::TextWrapping {
+						max_rows:1,
+						break_anywhere: true,
+						overflow_character: Some('…'),
+						..Default::default()
+					};
+					let mut sub_ui=ui.child_ui(ui.available_rect_before_wrap(),egui::Layout::default());
+					let bt=egui::Button::image_and_text(icon,job);
+					let bt=bt.rounding(egui::Rounding::same(5f32));
+					let bt=bt.frame(false);
+					let bt=bt.ui(&mut sub_ui);
+					//Label::new(egui::RichText::new(instance.display_name()).color(Color32::from_gray(255)).background_color(instance.theme_color())).ui(ui);
+					ui.add_space(bt.rect.height());
 				}
 				//トップレベル要素ならCWか確認する
 				let show_note=if !top_level{
