@@ -182,6 +182,7 @@ impl <F> MainUI<F>{
 			self.normal_note(ui,note,None,true);
 		}
 		ui.horizontal_wrapped(|ui|{
+			//ノート操作メニュー
 			if ui.button(&self.locale.add_reaction).clicked(){
 				let mut lock=self.reaction_picker.lock().unwrap();
 				if lock.as_ref().map(|id|id==&note.id).unwrap_or_default(){
@@ -192,6 +193,9 @@ impl <F> MainUI<F>{
 			}
 			if ui.button(&self.locale.reload).clicked(){
 				let _=self.reload.blocking_send(load_misskey::LoadSrc::Note(note.id.clone()));
+			}
+			if ui.button(&self.locale.open_in_browser).clicked(){
+				ui.ctx().open_url(egui::OpenUrl::new_tab(format!("{}/notes/{}",self.config.1.instance.as_ref().unwrap(),&note.id)));
 			}
 		});
 		if let Some(id)=self.reaction_picker.lock().unwrap().as_ref(){
