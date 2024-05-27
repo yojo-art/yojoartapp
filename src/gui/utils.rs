@@ -87,8 +87,16 @@ impl <F> MainUI<F>{
 			reaction:String,
 			i:String,
 		}
+		let id=if note.text.raw.is_empty(){
+			match note.quote.as_ref(){
+				Some(n)=>n.id.clone(),
+				None=>return false,
+			}
+		}else{
+			note.id.clone()
+		};
 		let payload=ReactionCreatepayload{
-			note_id:note.id.clone(),
+			note_id:id,
 			reaction:emoji.reaction(),
 			i:self.config.1.token.as_ref().unwrap().clone(),
 		};
