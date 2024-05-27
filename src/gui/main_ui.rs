@@ -8,7 +8,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Receiver;
 
-use crate::{data_model, delay_assets, load_misskey, ConfigFile, LocaleFile, StateFile};
+use crate::{data_model::{self, Visibility}, delay_assets, load_misskey, ConfigFile, LocaleFile, StateFile};
 
 use super::utils::ZoomMediaView;
 
@@ -106,6 +106,7 @@ pub(crate) fn open<F>(options:NativeOptions,ime_show:F)where F:FnMut(&mut bool)+
 				view_old_timeline:0f32,
 				open_timeline,
 				state,
+				rn_dialog:std::sync::Mutex::new(None),
 			})
 		}),
 	).unwrap();
@@ -136,6 +137,7 @@ pub(super) struct MainUI<F>{
 	pub(super) view_old_timeline:f32,
 	pub(super) open_timeline:std::sync::Mutex<Option<(Option<load_misskey::TimeLine>,Option<String>)>>,
 	pub(super) state:StateFile,
+	pub(super) rn_dialog:std::sync::Mutex<Option<(String,Visibility)>>,
 }
 impl <F> eframe::App for MainUI<F> where F:FnMut(&mut bool)+'static{
 	fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -233,6 +235,16 @@ impl <F> MainUI<F>{
 					load_img(&self,n);
 					//let _=self.delay_assets.blocking_send(data_model::DelayAssets::Note(n.clone()));
 				}
+			}
+		});
+		ui.vertical(|ui|{
+			ui.heading(&self.locale.default_renote_visibility);
+			let old=self.state.default_renote_visibility.clone();
+			ui.radio_value(&mut self.state.default_renote_visibility,data_model::Visibility::Public,&self.locale.visibility_public);
+			ui.radio_value(&mut self.state.default_renote_visibility,data_model::Visibility::Home,&self.locale.visibility_home);
+			ui.radio_value(&mut self.state.default_renote_visibility,data_model::Visibility::Followers,&self.locale.visibility_followers);
+			if old!=self.state.default_renote_visibility{
+				self.state.write(&self.delay_assets);
 			}
 		});
 	}

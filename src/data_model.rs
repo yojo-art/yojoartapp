@@ -33,6 +33,24 @@ impl PartialEq for Note{
 	}
 }
 impl Note{
+	pub fn is_simple_renote(&self)->bool{
+		self.text.raw.is_empty()
+	}
+	pub fn can_renote(&self)->bool{
+		if self.is_simple_renote(){
+			if let Some(q)=self.quote.as_ref(){
+				q.can_renote()
+			}else{
+				false
+			}
+		}else{
+			match self.visibility{
+				Visibility::Public|
+				Visibility::Home=>true,
+				_=>false,
+			}
+		}
+	}
 	pub fn created_at_label(&self)->String{
 		let secs_ago=chrono::Utc::now().timestamp()-self.created_at.timestamp();
 		if secs_ago>12*30*24*60*60{
@@ -139,12 +157,13 @@ impl NoteFile{
 		self.img.is_some()
 	}
 }
-#[derive(PartialEq,Eq,Clone, Copy,Debug)]
+#[derive(PartialEq,Eq,Clone,Copy,Serialize,Deserialize,Default,Debug)]
 pub enum Visibility {
-    Public,
-    Home,
-    Followers,
-    Specified,
+	#[default]
+	Public,
+	Home,
+	Followers,
+	Specified,
 }
 impl From<&str> for Visibility{
 	fn from(value: &str) -> Self {
@@ -154,6 +173,16 @@ impl From<&str> for Visibility{
 			"followers"=>Self::Followers,
 			_=>Self::Specified
 		}
+	}
+}
+impl ToString for Visibility{
+	fn to_string(&self) -> String {
+		match self{
+			Visibility::Public => "public",
+			Visibility::Home => "home",
+			Visibility::Followers => "followers",
+			Visibility::Specified => "specified",
+		}.to_owned()
 	}
 }
 #[derive(Debug)]
