@@ -1,4 +1,8 @@
 {
+	"no_thumbnail_img":"自動的に読み込まない",
+	"always_original_img":"高画質で表示",
+	"default_thumbnail_img":"サムネイルを表示",
+	"thumbnail_mode":"添付画像の表示方法",
 	"summaly_default_title":"利用できません",
 	"summaly_default_description":"",
 	"summaly_default_sitename":"利用できません",

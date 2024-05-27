@@ -5,7 +5,7 @@ use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{Mutex, RwLock}};
 
-use crate::{load_misskey::{RawFile, RawInstance, RawNote, RawUser}, ConfigFile};
+use crate::{load_misskey::{RawFile, RawInstance, RawNote, RawUser}, ConfigFile, StateFile};
 
 const DUMMY_PNG:&'static str="local://dummy.png";
 pub const DEFAULT_ANIMATION:bool=true;
@@ -79,6 +79,7 @@ impl Note{
 #[derive(Clone,Debug)]
 pub struct NoteFile{
 	pub(crate) img:Option<Arc<UrlImage>>,
+	pub(crate) original_img:Option<Arc<UrlImage>>,
 	pub original_url:Option<String>,
 	pub blurhash: Option<Arc<UrlImage>>,
 	pub is_sensitive:bool,
@@ -86,14 +87,19 @@ pub struct NoteFile{
 }
 impl From<&RawFile> for NoteFile{
 	fn from(value: &RawFile) -> Self {
-		let img=if value.mime_type.as_ref().map(|s|s.starts_with("image/")).unwrap_or(false){
-			if let Some(url)=value.thumbnail_url.as_ref(){
+		let (img,original_img)=if value.mime_type.as_ref().map(|s|s.starts_with("image/")).unwrap_or(false){
+			(if let Some(url)=value.thumbnail_url.as_ref(){
 				Some(Arc::new(UrlImage::from(url.to_owned())))
 			}else{
 				None
-			}
+			},
+			if let Some(url)=value.url.as_ref(){
+				Some(Arc::new(UrlImage::from(url.to_owned())))
+			}else{
+				None
+			})
 		}else{
-			None
+			(None,None)
 		};
 		if img.is_none(){
 			println!("{:?} not image",&value.mime_type);
@@ -116,6 +122,7 @@ impl From<&RawFile> for NoteFile{
 		};
 		Self{
 			img,
+			original_img,
 			blurhash,
 			is_sensitive:value.is_sensitive,
 			original_url:value.url.clone(),
@@ -201,6 +208,8 @@ pub struct EmojiCache{
 pub enum DelayAssets{
 	Note(Arc<Note>),
 	Emoji(EmojiCache,LocalEmojis),
+	Image(Arc<UrlImage>),
+	UpdateState(Arc<StateFile>),
 }
 #[derive(Copy,Clone,Debug)]
 pub struct UnicodeEmoji(u32);
