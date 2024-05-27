@@ -187,7 +187,7 @@ impl <F> MainUI<F>{
 			return;
 		}
 		if ui.checkbox(&mut self.state.nsfw_always_show,&self.locale.nsfw_always_show).changed(){
-			self.state.write();
+			self.state.write(&self.delay_assets);
 		}
 		if ui.button(&self.locale.show_license).clicked(){
 			self.view_license=true;
@@ -195,8 +195,46 @@ impl <F> MainUI<F>{
 			return;
 		}
 		if ui.checkbox(&mut self.state.auto_old_timeline,&self.locale.auto_old_timeline).changed(){
-			self.state.write();
+			self.state.write(&self.delay_assets);
 		}
+		ui.vertical(|ui|{
+			ui.heading(&self.locale.thumbnail_mode);
+			let old=self.state.file_thumbnail_mode.clone();
+			ui.radio_value(&mut self.state.file_thumbnail_mode,crate::FileThumbnailMode::None,&self.locale.no_thumbnail_img);
+			ui.radio_value(&mut self.state.file_thumbnail_mode,crate::FileThumbnailMode::Original,&self.locale.always_original_img);
+			ui.radio_value(&mut self.state.file_thumbnail_mode,crate::FileThumbnailMode::Thumbnail,&self.locale.default_thumbnail_img);
+			if old!=self.state.file_thumbnail_mode{
+				self.state.write(&self.delay_assets);
+				fn load_img<F>(s:&MainUI<F>,n:&data_model::Note){
+					if let Some(q)=n.quote.as_ref(){
+						load_img(s,q);
+					}
+					for f in &n.files{
+						match s.state.file_thumbnail_mode{
+							crate::FileThumbnailMode::Thumbnail => {
+								if let Some(img)=f.img.as_ref(){
+									if !img.loaded(){
+										let _=s.delay_assets.blocking_send(data_model::DelayAssets::Image(img.clone()));
+									}
+								}
+							},
+							crate::FileThumbnailMode::Original => {
+								if let Some(img)=f.original_img.as_ref(){
+									if !img.loaded(){
+										let _=s.delay_assets.blocking_send(data_model::DelayAssets::Image(img.clone()));
+									}
+								}
+							},
+							crate::FileThumbnailMode::None => {},
+						}
+					}
+				}
+				for n in &self.notes{
+					load_img(&self,n);
+					//let _=self.delay_assets.blocking_send(data_model::DelayAssets::Note(n.clone()));
+				}
+			}
+		});
 	}
 	fn media(&self,ui:&mut egui::Ui,lock:&mut Option<ZoomMediaView>){
 		fn view<F>(ui:&mut egui::Ui,img:egui::Image<'static>,close:F)where F:FnOnce()->(){

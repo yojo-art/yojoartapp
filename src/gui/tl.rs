@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use egui::{Color32, ScrollArea, Widget};
 
-use crate::{data_model::{DelayAssets, LocalEmojis, Note, Summaly, UrlImage}, gui::utils::ZoomMediaView, load_misskey::{self, TimeLine}};
+use crate::{data_model::{self, DelayAssets, LocalEmojis, Note, Summaly, UrlImage}, gui::utils::ZoomMediaView, load_misskey::{self, TimeLine}};
 
 use super::main_ui::MainUI;
 
@@ -17,13 +17,13 @@ impl <F> MainUI<F>{
 					self.state.timeline=tl.clone();
 					self.notes.clear();
 					if until_id.is_none(){
-						self.state.write();
+						self.state.write(&self.delay_assets);
 					}
 				}
 			}
 			if until_id.is_some(){
 				self.notes.clear();
-				self.state.write();
+				self.state.write(&self.delay_assets);
 			}
 			let known_notes=self.notes.clone();
 			let websocket=self.auto_update;
@@ -366,7 +366,16 @@ impl <F> MainUI<F>{
 						let img_opt=if !show_sensitive{
 							None
 						}else{
-							file.image(self.animate_frame).map(|v|Some(v))
+							if self.state.file_thumbnail_mode==crate::FileThumbnailMode::Original{
+								match file.original_img.as_ref(){
+									Some(v) => {
+										v.get(self.animate_frame).map(|v|Some(Some(v))).unwrap_or_default()
+									},
+									None => None,
+								}
+							}else{
+								file.image(self.animate_frame).map(|v|Some(v))
+							}
 						};
 						if let Some(img)=img_opt.unwrap_or_else(||{
 							file.blurhash.as_ref().map(|img|img.get(self.animate_frame)).unwrap_or_default()
@@ -382,24 +391,14 @@ impl <F> MainUI<F>{
 							if res.clicked(){
 								if !show_sensitive{
 									file.show_sensitive.store(true,std::sync::atomic::Ordering::Relaxed);
-								}else if let Some(url)=file.original_url.clone(){
+								}else if let Some(original_img)=file.original_img.clone(){
 									if let Ok(mut lock)=self.view_media.lock(){
 										let preview=file.image(self.animate_frame).map(|v|Some(v)).unwrap_or_else(||{
 											file.blurhash.as_ref().map(|img|img.get(self.animate_frame)).unwrap_or_default()
 										});
-										let original_img=Arc::new(UrlImage::from(url));
-										let original_img0=original_img.clone();
-										let ctx=ui.ctx().clone();
-										let client=self.client.clone();
-										let config=self.config.1.clone();
-										std::thread::spawn(move||{
-											tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async{
-												//tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-												original_img0.load(&client).await;
-												original_img0.load_gpu(&ctx,&config).await;
-											});
-											ctx.request_repaint();
-										});
+										if !original_img.loaded(){
+											let _=self.delay_assets.blocking_send(data_model::DelayAssets::Image(original_img.clone()));
+										}
 										*lock=Some(ZoomMediaView{
 											original_img,
 											preview,

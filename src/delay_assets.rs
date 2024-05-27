@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{data_model, ConfigFile};
+use crate::{data_model, ConfigFile, StateFile};
 
 use reqwest::Client;
 use tokio::sync::mpsc::Receiver;
@@ -10,6 +10,8 @@ pub(crate) async fn delay_assets(mut recv:Receiver<data_model::DelayAssets>,ctx:
 	let mut note_buf=Vec::with_capacity(4);
 	let mut job_buf=Vec::with_capacity(4);
 	let mut emoji_job_buf=Vec::with_capacity(4);
+	let mut image_job_buf=Vec::with_capacity(32);
+	let mut state=Arc::new(StateFile::load().unwrap_or_default());
 	loop{
 		let limit=note_buf.capacity();
 		if recv.recv_many(&mut note_buf,limit).await==0{
@@ -22,14 +24,15 @@ pub(crate) async fn delay_assets(mut recv:Receiver<data_model::DelayAssets>,ctx:
 					let client=client.clone();
 					let config=config.clone();
 					let q=note.quote.clone();
+					let state=state.clone();
 					job_buf.push(async move{
 						futures::join!(
 							async{
 								if let Some(note)=q{
-									load_note(note,&ctx,&client,&config).await
+									load_note(note,&ctx,&client,&config,&state).await
 								}
 							},
-							load_note(note,&ctx,&client,&config)
+							load_note(note,&ctx,&client,&config,&state)
 						);
 					});
 				},
@@ -48,15 +51,30 @@ pub(crate) async fn delay_assets(mut recv:Receiver<data_model::DelayAssets>,ctx:
 						}
 					});
 				},
+				data_model::DelayAssets::Image(img) =>{
+					let ctx=ctx.clone();
+					let client=client.clone();
+					let config=config.clone();
+					image_job_buf.push(async move{
+						//tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+						img.load(&client).await;
+						img.load_gpu(&ctx,&config).await;
+					});
+				},
+				data_model::DelayAssets::UpdateState(s) =>{
+					state=s;
+				},
 			}
 		}
-		let d:Vec<_>=job_buf.drain(..).collect();
-		let d2:Vec<_>=emoji_job_buf.drain(..).collect();
+		let job_buf:Vec<_>=job_buf.drain(..).collect();
+		let emoji_job_buf:Vec<_>=emoji_job_buf.drain(..).collect();
+		let image_job_buf:Vec<_>=image_job_buf.drain(..).collect();
 		let ctx=ctx.clone();
 		tokio::runtime::Handle::current().spawn(async move{
 			futures::join!(
-				futures::future::join_all(d),
-				futures::future::join_all(d2),
+				futures::future::join_all(job_buf),
+				futures::future::join_all(emoji_job_buf),
+				futures::future::join_all(image_job_buf),
 			);
 			ctx.request_repaint();
 		});
@@ -64,7 +82,7 @@ pub(crate) async fn delay_assets(mut recv:Receiver<data_model::DelayAssets>,ctx:
 	//tokio::time::sleep(tokio::time::Duration::from_millis(10000)).await;
 	//user.icon.unload().await;
 }
-async fn load_note(note:Arc<data_model::Note>,ctx:&egui::Context,client:&Client,config:&Arc<ConfigFile>){
+async fn load_note(note:Arc<data_model::Note>,ctx:&egui::Context,client:&Client,config:&Arc<ConfigFile>,state:&Arc<StateFile>){
 	let mut job_buf=Vec::with_capacity(4);
 	let mut job_buf2=Vec::with_capacity(4);
 	let mut job_buf_emojis=Vec::with_capacity(32);
@@ -96,10 +114,22 @@ async fn load_note(note:Arc<data_model::Note>,ctx:&egui::Context,client:&Client,
 		}
 	}
 	for file in note.files.iter(){
-		if let Some(urlimg)=file.img.as_ref(){
-			if !urlimg.loaded(){
-				job_buf_emojis.push(load_url(urlimg.clone(),client.clone(),ctx.clone(),config.clone()));
-			}
+		match state.file_thumbnail_mode{
+			crate::FileThumbnailMode::Thumbnail => {
+				if let Some(urlimg)=file.img.as_ref(){
+					if !urlimg.loaded(){
+						job_buf_emojis.push(load_url(urlimg.clone(),client.clone(),ctx.clone(),config.clone()));
+					}
+				}
+			},
+			crate::FileThumbnailMode::Original => {
+				if let Some(urlimg)=file.original_img.as_ref(){
+					if !urlimg.loaded(){
+						job_buf_emojis.push(load_url(urlimg.clone(),client.clone(),ctx.clone(),config.clone()));
+					}
+				}
+			},
+			crate::FileThumbnailMode::None => {},
 		}
 	}
 	for (url,summaly) in note.text.urls(){

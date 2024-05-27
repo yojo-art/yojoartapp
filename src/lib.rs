@@ -19,13 +19,20 @@ pub fn open(){
 	};
 	common(options,|_|{});
 }
-
-#[derive(Debug,Default,Serialize,Deserialize)]
+#[derive(Eq,PartialEq,Clone,Debug,Default,Serialize,Deserialize)]
+pub enum FileThumbnailMode{
+	#[default]
+	Thumbnail,
+	None,
+	Original
+}
+#[derive(Clone,Debug,Default,Serialize,Deserialize)]
 pub struct StateFile{
 	timeline: load_misskey::TimeLine,
 	until_id:Option<String>,
 	nsfw_always_show:bool,
 	auto_old_timeline:bool,
+	file_thumbnail_mode:FileThumbnailMode,
 }
 impl StateFile{
 	fn file()->String{
@@ -40,12 +47,14 @@ impl StateFile{
 			Err(_)=>"state.json".to_owned()
 		}
 	}
-	pub fn write(&self){
+	pub fn write(&self,delay_assets:&tokio::sync::mpsc::Sender<data_model::DelayAssets>){
 		if let Ok(writer)=std::fs::File::create(Self::file()){
 			if let Err(e)=serde_json::to_writer(writer,&self){
 				eprintln!("{:?}",e);
 			}
 		}
+		let v=Arc::new(self.clone());
+		let _=delay_assets.blocking_send(data_model::DelayAssets::UpdateState(v));
 	}
 	pub fn load()->Option<Self>{
 		if let Ok(writer)=std::fs::File::open(Self::file()){
@@ -84,6 +93,10 @@ pub struct LocaleFile{
 	summaly_default_title:String,
 	summaly_default_description:String,
 	summaly_default_sitename:String,
+	thumbnail_mode:String,
+	default_thumbnail_img:String,
+	always_original_img:String,
+	no_thumbnail_img:String,
 }
 fn load_config()->(String,Arc<ConfigFile>){
 	let config_path=match std::env::var("YAC_CONFIG_PATH"){
