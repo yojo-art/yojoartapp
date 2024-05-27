@@ -81,6 +81,9 @@ pub struct LocaleFile{
 	add_reaction:String,
 	reload:String,
 	open_in_browser:String,
+	summaly_default_title:String,
+	summaly_default_description:String,
+	summaly_default_sitename:String,
 }
 fn load_config()->(String,Arc<ConfigFile>){
 	let config_path=match std::env::var("YAC_CONFIG_PATH"){

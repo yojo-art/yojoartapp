@@ -826,6 +826,15 @@ impl UrlImage{
 			loaded:AtomicBool::new(loaded),
 		}
 	}
+	pub fn size(&self)->Option<[usize;2]>{
+		let r_lock=self.img.blocking_read();
+		if let TextureState::OnGpu(h)=&*r_lock{
+			let h=h.first()?;
+			Some(h.1.size())
+		}else{
+			None
+		}
+	}
 	pub fn get(&self,animate_ms:u64)->Option<egui::Image<'static>>{
 		let r_lock=self.img.blocking_read();
 		if let TextureState::OnGpu(h)=&*r_lock{
