@@ -212,8 +212,8 @@ pub async fn load_misskey(
 		emoji_cache.trim(rc).await;
 		for (k,v) in file_cache.iter(){
 			if v.is_image(){
-				if v.img.as_ref().unwrap().loaded(){
-					let count=Arc::strong_count(v.img.as_ref().unwrap());
+				if v.blurhash.as_ref().unwrap().loaded(){
+					let count=Arc::strong_count(v.blurhash.as_ref().unwrap());
 					//画像は参照が一定に満たない場合
 					if count<rc{
 						remove_targets.push(k.clone());
