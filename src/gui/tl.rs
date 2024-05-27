@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use egui::{Color32, ScrollArea, Widget};
 
-use crate::{data_model::{DelayAssets, LocalEmojis, Note, UrlImage}, gui::utils::ZoomMediaView, load_misskey::{self, TimeLine}};
+use crate::{data_model::{DelayAssets, LocalEmojis, Note, Summaly, UrlImage}, gui::utils::ZoomMediaView, load_misskey::{self, TimeLine}};
 
 use super::main_ui::MainUI;
 
@@ -155,7 +155,67 @@ impl <F> MainUI<F>{
 			}
 		}
 	}
-
+	fn url_summaly(&self,url:&str,summaly:&Arc<tokio::sync::Mutex<Option<Summaly>>>,ui:&mut egui::Ui){
+		let mut sub_ui=ui.child_ui_with_id_source(ui.available_rect_before_wrap(),egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),url);
+		let sub_ui=&mut sub_ui;
+		let lock=summaly.blocking_lock();
+		let mut title=self.locale.summaly_default_title.as_str();
+		let mut description=self.locale.summaly_default_description.as_str();
+		let mut sitename=self.locale.summaly_default_sitename.as_str();
+		let mut favicon=None;
+		let mut thumbnail=None;
+		//画面幅を取得しておく
+		let available_width=ui.available_width();
+		if let Some(a)=lock.as_ref(){
+			title=a.title.as_ref().as_ref().map(|s|s.as_str()).unwrap_or(url);
+			description=a.description.as_ref().map(|s|{
+				let len=s.char_indices().nth(50).map(|(v,_)|v).unwrap_or(s.len());
+				&s[..len]
+			}).unwrap_or("");
+			sitename=a.sitename.as_ref().map(|s|s.as_str()).unwrap_or(url);
+			favicon=a.icon.as_ref();
+			thumbnail=a.thumbnail.as_ref();
+		}
+		let long_mode=thumbnail.as_ref().map(|img|img.size().map(|v|v[0] as f32>v[1] as f32*1.3f32).unwrap_or(false)).unwrap_or(false);
+		if !long_mode{//正方形or縦長モード
+			if let Some(thumbnail)=thumbnail{
+				//幅は画面幅の25%上限
+				let max_width=available_width*0.25f32;
+				//高さは幅の150%上限
+				let max_height=max_width*1.5;
+				self.get_image(&thumbnail).max_size([max_width,max_height].into()).ui(sub_ui);
+			}
+		}
+		sub_ui.vertical(|sub_ui|{
+			sub_ui.strong(title);
+			sub_ui.label(description);
+			sub_ui.horizontal_wrapped(|sub_ui|{
+				if let Some(favicon)=favicon{
+					self.get_image(&favicon).max_size([10f32,10f32].into()).ui(sub_ui);
+				}
+				sub_ui.label(sitename);
+			});
+			if long_mode{//横長モード
+				if let Some(thumbnail)=thumbnail{
+					//高さは無制限(暫定的)
+					self.get_image(&thumbnail).max_size([available_width,f32::MAX].into()).ui(sub_ui);
+				}
+			}
+		});
+		let mut size=sub_ui.min_size();
+		size.x=ui.available_width();
+		if egui::Button::new("").min_size(size).fill(Color32::from_black_alpha(0)).stroke(egui::Stroke::new(1f32,egui::Color32::from_gray(200))).ui(ui).clicked(){
+			//プレビュー拡大
+			if let Some(thumbnail)=thumbnail{
+				if let Ok(mut lock)=self.view_media.lock(){
+					*lock=Some(ZoomMediaView{
+						original_img:thumbnail.clone(),
+						preview:None,
+					});
+				}
+			}
+		}
+	}
 	fn note_ui(&self,ui:&mut egui::Ui,note:&Arc<Note>){
 		if let Some(quote)=note.quote.as_ref(){
 			if !note.text.is_empty(){
@@ -378,43 +438,9 @@ impl <F> MainUI<F>{
 							img.ui(ui);
 						}
 					}
+					//URLサマリは本文外に描画
 					for (url,summaly) in note.text.urls(){
-						let mut sub_ui=ui.child_ui_with_id_source(ui.available_rect_before_wrap(),egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),url);
-						let sub_ui=&mut sub_ui;
-						let lock=summaly.blocking_lock();
-						let mut title="error";
-						let mut description="";
-						let mut sitename="error";
-						let mut favicon=None;
-						let mut thumbnail=None;
-						let aw=ui.available_width();
-						if let Some(a)=lock.as_ref(){
-							title=a.title.as_ref().as_ref().map(|s|s.as_str()).unwrap_or(url.as_str());
-							description=a.description.as_ref().map(|s|{
-								let len=s.char_indices().nth(50).map(|(v,_)|v).unwrap_or(s.len());
-								&s[..len]
-							}).unwrap_or("");
-							sitename=a.sitename.as_ref().map(|s|s.as_str()).unwrap_or(url.as_str());
-							favicon=a.icon.as_ref();
-							thumbnail=a.thumbnail.as_ref();
-						}
-						if let Some(thumbnail)=thumbnail{
-							let size=aw*0.25f32;
-							self.get_image(&thumbnail).max_size([size,size].into()).ui(sub_ui);
-						}
-						sub_ui.vertical(|sub_ui|{
-							sub_ui.strong(title);
-							sub_ui.label(description);
-							sub_ui.horizontal_wrapped(|sub_ui|{
-								if let Some(favicon)=favicon{
-									self.get_image(&favicon).max_size([10f32,10f32].into()).ui(sub_ui);
-								}
-								sub_ui.label(sitename);
-							});
-						});
-						let mut size=sub_ui.min_size();
-						size.x=ui.available_width();
-						egui::Button::new("").min_size(size).fill(Color32::from_black_alpha(0)).stroke(egui::Stroke::new(1f32,egui::Color32::from_gray(200))).ui(ui);
+						self.url_summaly(url,summaly,ui);
 					}
 					//引用
 					if let Some(quote)=quote{
