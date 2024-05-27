@@ -33,6 +33,50 @@ impl <F> MainUI<F>{
 	pub(super) fn get_image(&self,icon:&UrlImage)->egui::Image<'static>{
 		icon.get(self.animate_frame).unwrap_or_else(||self.dummy.get(self.animate_frame).unwrap())
 	}
+	pub(super) fn renote_send(&self,note:&Note,visibility:Visibility)->bool{
+		let build=self.client.post(format!("{}/api/notes/create",self.config.1.instance.as_ref().unwrap()));
+		let build=build.header(reqwest::header::CONTENT_TYPE,"application/json");
+		#[derive(Debug,Serialize,Deserialize)]
+		struct RenoteCreatePayload{
+			#[serde(rename = "renoteId")]
+			renote_id:String,
+			visibility:String,
+			i:String,
+			#[serde(rename = "localOnly")]
+			local_only:bool,
+		}
+		let id=if note.text.raw.is_empty(){
+			match note.quote.as_ref(){
+				Some(n)=>n.id.clone(),
+				None=>return false,
+			}
+		}else{
+			note.id.clone()
+		};
+		let payload=RenoteCreatePayload{
+			renote_id:id,
+			visibility:visibility.to_string(),
+			i:self.config.1.token.as_ref().unwrap().clone(),
+			local_only:false,
+		};
+		println!("RN {:?}",payload);
+		let build=build.body(serde_json::to_string(&payload).unwrap());
+		let ok=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async{
+			let res=build.send().await;
+			match res{
+				Ok(res)=>{
+					let status=res.status().as_u16();
+					println!("RenoteSendStatus {}",status);
+					status==200
+				},
+				Err(e)=>{
+					eprintln!("{:?}",e);
+					false
+				}
+			}
+		});
+		ok
+	}
 	pub(super) fn reaction_send(&self,note:&Note,emoji:&LocalEmojis)->bool{
 		let build=self.client.post(format!("{}/api/notes/reactions/create",self.config.1.instance.as_ref().unwrap()));
 		let build=build.header(reqwest::header::CONTENT_TYPE,"application/json");

@@ -6,6 +6,7 @@ mod gui;
 mod delay_assets;
 use std::{io::Write, sync::Arc};
 
+use data_model::Visibility;
 use eframe::NativeOptions;
 
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,7 @@ pub struct StateFile{
 	nsfw_always_show:bool,
 	auto_old_timeline:bool,
 	file_thumbnail_mode:FileThumbnailMode,
+	default_renote_visibility:Visibility,
 }
 impl StateFile{
 	fn file()->String{
@@ -97,6 +99,12 @@ pub struct LocaleFile{
 	default_thumbnail_img:String,
 	always_original_img:String,
 	no_thumbnail_img:String,
+	visibility_public:String,
+	visibility_home:String,
+	visibility_followers:String,
+	visibility_specified:String,
+	send_renote:String,
+	default_renote_visibility:String,
 }
 fn load_config()->(String,Arc<ConfigFile>){
 	let config_path=match std::env::var("YAC_CONFIG_PATH"){

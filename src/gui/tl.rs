@@ -257,7 +257,31 @@ impl <F> MainUI<F>{
 			if ui.button(&self.locale.open_in_browser).clicked(){
 				ui.ctx().open_url(egui::OpenUrl::new_tab(format!("{}/notes/{}",self.config.1.instance.as_ref().unwrap(),&note.id)));
 			}
+			if note.can_renote(){
+				if ui.button("RN").clicked(){
+					let mut lock=self.rn_dialog.lock().unwrap();
+					if lock.as_ref().map(|(id,_)|id==&note.id).unwrap_or(false){
+						lock.take();
+					}else{
+						lock.replace((note.id.clone(),self.state.default_renote_visibility.clone()));
+					}
+				}
+			}
 		});
+		if let Ok(mut lock)=self.rn_dialog.lock(){
+			if let Some((id,v))=lock.as_mut(){
+				if id.as_str()==note.id.as_str(){
+					ui.vertical(|ui|{
+						ui.radio_value(v,data_model::Visibility::Public,&self.locale.visibility_public);
+						ui.radio_value(v,data_model::Visibility::Home,&self.locale.visibility_home);
+						ui.radio_value(v,data_model::Visibility::Followers,&self.locale.visibility_followers);
+						if ui.button(&self.locale.send_renote).clicked(){
+							self.renote_send(note,v.clone());
+						}
+					});
+				}
+			}
+		}
 		if let Some(id)=self.reaction_picker.lock().unwrap().as_ref(){
 			if id==&note.id{
 				if let Some(emojis)=&self.emojis{

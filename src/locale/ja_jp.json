@@ -1,4 +1,10 @@
 {
+	"default_renote_visibility":"リノートの公開範囲",
+	"send_renote":"リノートを公開",
+	"visibility_public":"パブリック",
+	"visibility_home":"ホーム",
+	"visibility_followers":"フォロワー",
+	"visibility_specified":"ダイレクト",
 	"no_thumbnail_img":"自動的に読み込まない",
 	"always_original_img":"高画質で表示",
 	"default_thumbnail_img":"サムネイルを表示",
