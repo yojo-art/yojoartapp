@@ -35,7 +35,7 @@ impl PartialEq for Note{
 }
 impl Note{
 	pub fn is_simple_renote(&self)->bool{
-		self.text.raw.is_empty()
+		self.text.raw.is_empty()&&self.files.len()==0
 	}
 	pub fn can_renote(&self)->bool{
 		if self.is_simple_renote(){
