@@ -28,11 +28,12 @@ impl <F> MainUI<F>{
 			let known_notes=self.notes.clone();
 			let websocket=self.auto_update;
 			let tl=tl.unwrap_or_else(||self.state.timeline.clone());
+			let limit=self.state.page_notes;
 			std::thread::spawn(move||{
 				tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async{
 					let _=reload.send(load_misskey::LoadSrc::TimeLine(load_misskey::TLOption{
 						until_id,
-						limit:30,
+						limit,
 						tl,
 						known_notes,
 						websocket,
@@ -119,7 +120,7 @@ impl <F> MainUI<F>{
 				self.notes.push(n);
 				self.view_old_timeline=0f32;
 			}
-			if self.notes.len()>30{
+			if self.notes.len()>self.state.page_notes as usize{
 				self.notes.remove(0);
 			}
 		}
@@ -134,13 +135,15 @@ impl <F> MainUI<F>{
 			for note in self.notes.iter().rev(){
 				let height=f32::from_bits(note.height.load(std::sync::atomic::Ordering::Relaxed));
 				if height>0.5&&(rect.min.y>y+height||y>rect.max.y){
+					ui.spacing_mut().item_spacing=[0f32,0f32].into();
 					ui.vertical(|ui|{
+						ui.spacing_mut().item_spacing=[0f32,0f32].into();
 						ui.add_space(height);
 					});
 					y+=height;
 				}else{
 					let res=ui.allocate_ui([width,0f32].into(),|ui|{
-						ui.label(format!("{}",height));
+						//ui.label(format!("{}",height));
 						self.note_ui(ui,note);
 					});
 					let h=res.response.rect.height();

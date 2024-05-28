@@ -185,6 +185,7 @@ impl <F> MainUI<F>{
 	fn config(&mut self,ui:&mut egui::Ui,ctx:&egui::Context){
 		if ui.button(&self.locale.close_settings).clicked(){
 			self.view_config=false;
+			self.state.write(&self.delay_assets);
 			ctx.request_repaint();
 			return;
 		}
@@ -247,6 +248,8 @@ impl <F> MainUI<F>{
 				self.state.write(&self.delay_assets);
 			}
 		});
+		ui.heading(&self.locale.page_notes_count);
+		egui::Slider::new(&mut self.state.page_notes,5..=100).ui(ui);
 	}
 	fn media(&self,ui:&mut egui::Ui,lock:&mut Option<ZoomMediaView>){
 		fn view<F>(ui:&mut egui::Ui,img:egui::Image<'static>,close:F)where F:FnOnce()->(){
