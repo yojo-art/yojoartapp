@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, fmt::Debug, hash::{Hash, Hasher}, io::Read, num::ParseIntError, sync::{atomic::AtomicBool, Arc}};
+use std::{borrow::Cow, collections::HashMap, fmt::Debug, hash::{Hash, Hasher}, io::Read, num::ParseIntError, sync::{atomic::{AtomicBool, AtomicU32}, Arc}};
 
 use egui::Color32;
 use image::DynamicImage;
@@ -23,6 +23,7 @@ pub struct Note{
 	pub files:Vec<NoteFile>,
 	pub cw:Option<MFMString>,
 	pub created_at: chrono::prelude::DateTime<chrono::prelude::Utc>,
+	pub height:AtomicU32,
 }
 impl PartialEq for Note{
 	fn eq(&self, other: &Self) -> bool {
@@ -91,6 +92,7 @@ impl Note{
 			},
 			files: vec![],
 			cw:None,
+			height:AtomicU32::new(0),
 		}
 	}
 }

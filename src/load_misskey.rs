@@ -538,6 +538,7 @@ async fn load_note(
 				id:quote.id,
 				cw:data_model::MFMString::new_opt(quote.cw,quote.emojis.as_ref(),user.instance.as_ref(),&emoji_cache).await,
 				user,
+				height:AtomicU32::new(0),
 			});
 			note_cache.insert(n.id.to_owned(),n.clone());
 			n
@@ -555,6 +556,7 @@ async fn load_note(
 			id:note.id,
 			cw:data_model::MFMString::new_opt(note.cw,note.emojis.as_ref(),user.instance.as_ref(),&emoji_cache).await,
 			user,
+			height:AtomicU32::new(0),
 		}),false))
 	}else if note.text.is_some() {
 		let user=note_user(user_cache,instance_cache,&note.user,&emoji_cache).await;
@@ -570,6 +572,7 @@ async fn load_note(
 			id:note.id,
 			cw:data_model::MFMString::new_opt(note.cw,note.emojis.as_ref(),user.instance.as_ref(),&emoji_cache).await,
 			user,
+			height:AtomicU32::new(0),
 		}),false))
 	}else{
 		None
