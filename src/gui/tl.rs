@@ -142,6 +142,7 @@ impl <F> MainUI<F>{
 					});
 					y+=height;
 				}else{
+					ui.spacing_mut().item_spacing=[5f32,0f32].into();
 					let res=ui.allocate_ui([width,0f32].into(),|ui|{
 						//ui.label(format!("{}",height));
 						self.note_ui(ui,note);
