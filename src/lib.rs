@@ -35,6 +35,7 @@ pub struct StateFile{
 	auto_old_timeline:bool,
 	file_thumbnail_mode:FileThumbnailMode,
 	default_renote_visibility:Visibility,
+	page_notes:u8,
 }
 impl StateFile{
 	fn file()->String{
@@ -105,6 +106,7 @@ pub struct LocaleFile{
 	visibility_specified:String,
 	send_renote:String,
 	default_renote_visibility:String,
+	page_notes_count:String,
 }
 fn load_config()->(String,Arc<ConfigFile>){
 	let config_path=match std::env::var("YAC_CONFIG_PATH"){
