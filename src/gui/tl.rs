@@ -128,12 +128,25 @@ impl <F> MainUI<F>{
 			(self.button_handle)(&mut self.show_ime);
 		}
 	*/
-		let scroll=ScrollArea::vertical().show(ui,|ui|{
+		let scroll=ScrollArea::vertical().show_viewport(ui,|ui,rect|{
 			let width=ui.available_width();
+			let mut y=0f32;
 			for note in self.notes.iter().rev(){
-				ui.allocate_ui([width,0f32].into(),|ui|{
-					self.note_ui(ui,note);
-				});
+				let height=f32::from_bits(note.height.load(std::sync::atomic::Ordering::Relaxed));
+				if height>0.5&&(rect.min.y>y+height||y>rect.max.y){
+					ui.vertical(|ui|{
+						ui.add_space(height);
+					});
+					y+=height;
+				}else{
+					let res=ui.allocate_ui([width,0f32].into(),|ui|{
+						ui.label(format!("{}",height));
+						self.note_ui(ui,note);
+					});
+					let h=res.response.rect.height();
+					note.height.store(h.to_bits(),std::sync::atomic::Ordering::Relaxed);
+					y+=h;
+				}
 			}
 			if !self.state.auto_old_timeline{
 				if egui::Button::new(&self.locale.load_old_timeline).ui(ui).clicked(){
@@ -218,7 +231,7 @@ impl <F> MainUI<F>{
 	}
 	fn note_ui(&self,ui:&mut egui::Ui,note:&Arc<Note>){
 		if let Some(quote)=note.quote.as_ref(){
-			if !note.text.is_empty(){
+			if !note.is_simple_renote(){
 				self.normal_note(ui,note,Some(quote),true);
 			}else{
 				ui.horizontal_wrapped(|ui|{
